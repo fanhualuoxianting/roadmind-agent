@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.roadmind.server.home.HomeDeviceService;
 import com.roadmind.server.workflow.CoreWorkflowModels.DeferredActionAuthorization;
 import com.roadmind.server.workflow.CoreWorkflowService;
+import com.roadmind.server.workflow.DeferredWorkflowAuthorizationValidator;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Clock;
@@ -32,13 +33,22 @@ public class ScheduledTaskService {
     private final ObjectMapper objectMapper;
     private final HomeDeviceService homeDevices;
     private final CoreWorkflowService workflowService;
+    private final DeferredWorkflowAuthorizationValidator workflowAuthorizationValidator;
     private final Clock clock = Clock.systemUTC();
     private final String defaultWorkerId = "server-" + UUID.randomUUID();
 
     public ScheduledTaskService(
             ObjectProvider<ScheduledTaskRepository> repositoryProvider,
             ObjectMapper objectMapper) {
-        this(repositoryProvider, objectMapper, null, null);
+        this(repositoryProvider, objectMapper, null, null, null);
+    }
+
+    public ScheduledTaskService(
+            ObjectProvider<ScheduledTaskRepository> repositoryProvider,
+            ObjectMapper objectMapper,
+            HomeDeviceService homeDevices,
+            CoreWorkflowService workflowService) {
+        this(repositoryProvider, objectMapper, homeDevices, workflowService, null);
     }
 
     @org.springframework.beans.factory.annotation.Autowired
@@ -46,11 +56,13 @@ public class ScheduledTaskService {
             ObjectProvider<ScheduledTaskRepository> repositoryProvider,
             ObjectMapper objectMapper,
             HomeDeviceService homeDevices,
-            CoreWorkflowService workflowService) {
+            CoreWorkflowService workflowService,
+            DeferredWorkflowAuthorizationValidator workflowAuthorizationValidator) {
         this.repositoryProvider = repositoryProvider;
         this.objectMapper = objectMapper;
         this.homeDevices = homeDevices;
         this.workflowService = workflowService;
+        this.workflowAuthorizationValidator = workflowAuthorizationValidator;
     }
 
     public ScheduledTaskSnapshot createReminder(
@@ -238,7 +250,9 @@ public class ScheduledTaskService {
             return;
         }
         if ("HOME_CONTROL".equals(task.taskType())) {
-            if (homeDevices == null || workflowService == null
+            if (homeDevices == null
+                    || workflowService == null
+                    || workflowAuthorizationValidator == null
                     || task.authorizationWorkflowId() == null
                     || task.authorizationStepId() == null
                     || task.authorizationConfirmationId() == null
@@ -246,8 +260,21 @@ public class ScheduledTaskService {
                     || task.authorizationPayloadHash() == null) {
                 throw new IllegalStateException("家居任务缺少原始授权引用");
             }
+            DeferredActionAuthorization authorization = workflowAuthorizationValidator.validate(
+                    task.authorizationWorkflowId(),
+                    task.authorizationStepId(),
+                    task.authorizationConfirmationId(),
+                    task.authorizationPlanVersion(),
+                    task.authorizationPayloadHash());
             String deviceId = task.payload().path("deviceId").asText("");
             boolean on = task.payload().path("on").asBoolean();
+            String authorizedDeviceId = String.valueOf(authorization.arguments().get("deviceId"));
+            boolean authorizedOn = Boolean.parseBoolean(
+                    String.valueOf(authorization.arguments().get("on")));
+            if (!deviceId.equals(authorizedDeviceId) || on != authorizedOn) {
+                throw new IllegalStateException("家居任务 payload 与原始授权不一致");
+            }
+
             homeDevices.setLight(
                     deviceId,
                     on,
