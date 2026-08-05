@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { preferenceApi, scheduledTaskApi } from '@/api/http'
-import type { Preference, ScheduledTask } from '@/types/phase5'
+import type { Preference, ScheduledTask } from '@/types/automation'
 
 const preferences = ref<Preference[]>([])
 const tasks = ref<ScheduledTask[]>([])
@@ -105,7 +105,7 @@ onMounted(() => {
   <section class="automation-page" aria-label="偏好与定时任务">
     <header class="automation-hero glass-panel">
       <div>
-        <p class="cockpit-kicker">PHASE 5 · RECOVERABLE STATE</p>
+        <p class="cockpit-kicker">AUTOMATION · RECOVERABLE STATE</p>
         <h1>偏好与自动化 <span>✦</span></h1>
         <p>可删除的长期偏好与可恢复的普通提醒，车辆高风险定时命令仍由模拟器原生能力负责。</p>
       </div>
