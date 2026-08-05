@@ -2,6 +2,7 @@ package com.roadmind.server.security;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.time.Clock;
 import java.time.Duration;
 import java.util.HexFormat;
 import java.util.concurrent.ConcurrentHashMap;
@@ -10,15 +11,32 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
-/** Redis-first fixed-window limiter with a bounded local fallback for dependency outages. */
+/** Redis-first fixed-window limiter with a strictly bounded local fallback for dependency outages. */
 @Service
 public class RateLimitService {
 
+    private static final int DEFAULT_MAX_LOCAL_WINDOWS = 10_000;
+
     private final ObjectProvider<StringRedisTemplate> redisProvider;
     private final ConcurrentHashMap<String, LocalWindow> localWindows = new ConcurrentHashMap<>();
+    private final Object localWindowLock = new Object();
+    private final Clock clock;
+    private final int maxLocalWindows;
 
     public RateLimitService(ObjectProvider<StringRedisTemplate> redisProvider) {
+        this(redisProvider, Clock.systemUTC(), DEFAULT_MAX_LOCAL_WINDOWS);
+    }
+
+    RateLimitService(
+            ObjectProvider<StringRedisTemplate> redisProvider,
+            Clock clock,
+            int maxLocalWindows) {
+        if (maxLocalWindows < 1) {
+            throw new IllegalArgumentException("maxLocalWindows must be positive");
+        }
         this.redisProvider = redisProvider;
+        this.clock = clock;
+        this.maxLocalWindows = maxLocalWindows;
     }
 
     public boolean tryAcquire(String bucket, String subject, int limit, Duration window) {
@@ -35,19 +53,35 @@ public class RateLimitService {
             }
         }
 
-        long now = System.currentTimeMillis();
+        long now = clock.millis();
         long windowMillis = Math.max(1L, window.toMillis());
-        LocalWindow local = localWindows.compute(safeKey, (key, existing) -> {
-            if (existing == null || now - existing.startedAt() >= windowMillis) {
-                return new LocalWindow(now, new AtomicInteger(1));
+        synchronized (localWindowLock) {
+            LocalWindow existing = localWindows.get(safeKey);
+            if (existing != null) {
+                if (now - existing.startedAt() < windowMillis) {
+                    return existing.count().incrementAndGet() <= limit;
+                }
+                localWindows.remove(safeKey, existing);
             }
-            existing.count().incrementAndGet();
-            return existing;
-        });
-        if (localWindows.size() > 10_000) {
-            localWindows.entrySet().removeIf(entry -> now - entry.getValue().startedAt() >= windowMillis * 2);
+
+            evictExpired(now, windowMillis);
+            if (localWindows.size() >= maxLocalWindows) {
+                // Fail closed instead of allowing a Redis outage plus high-cardinality subjects
+                // to turn the local fallback into an unbounded memory sink.
+                return false;
+            }
+
+            localWindows.put(safeKey, new LocalWindow(now, new AtomicInteger(1)));
+            return true;
         }
-        return local.count().get() <= limit;
+    }
+
+    int localWindowCount() {
+        return localWindows.size();
+    }
+
+    private void evictExpired(long now, long windowMillis) {
+        localWindows.entrySet().removeIf(entry -> now - entry.getValue().startedAt() >= windowMillis);
     }
 
     private String digest(String value) {
