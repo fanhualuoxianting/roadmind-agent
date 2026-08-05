@@ -146,6 +146,7 @@ jobs:
             docs/map-and-trip-design.md
             docs/requirements.md
             docs/security-design.md
+            roadmind-web/src/types/phase5.ts
           )
 
           for path in "${forbidden_files[@]}"; do
@@ -166,6 +167,13 @@ jobs:
           if [[ -n "$phase_named_tests" ]]; then
             echo 'Integration tests must be named after behavior, not development phases:'
             printf '%s\n' "$phase_named_tests"
+            exit 1
+          fi
+
+          visible_phase_labels="$(git grep -n -I -E 'PHASE[[:space:]]*[0-9]|阶段[[:space:]]*[0-9]' -- README.md docs roadmind-web/src || true)"
+          if [[ -n "$visible_phase_labels" ]]; then
+            echo 'Public documentation or UI still exposes a development-phase label:'
+            printf '%s\n' "$visible_phase_labels"
             exit 1
           fi
 
