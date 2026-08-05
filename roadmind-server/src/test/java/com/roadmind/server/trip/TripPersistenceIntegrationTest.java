@@ -25,7 +25,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
 
 @Testcontainers(disabledWithoutDocker = true)
-class PhaseFiveTripPersistenceTest {
+class TripPersistenceIntegrationTest {
 
     @Container
     private static final MySQLContainer<?> MYSQL = new MySQLContainer<>(

@@ -1,4 +1,4 @@
-package com.roadmind.server.phase5;
+package com.roadmind.server.conversation;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
@@ -6,10 +6,6 @@ import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.roadmind.server.agent.ConversationSnapshot;
-import com.roadmind.server.conversation.ConversationContextCache;
-import com.roadmind.server.conversation.ConversationContextService;
-import com.roadmind.server.conversation.ConversationContextSnapshot;
-import com.roadmind.server.conversation.ConversationPersistence;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.sql.SQLTransientConnectionException;
@@ -33,7 +29,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
 
 @Testcontainers(disabledWithoutDocker = true)
-class PhaseFiveContextPersistenceTest {
+class ConversationContextPersistenceIntegrationTest {
 
     @Container
     private static final MySQLContainer<?> MYSQL = new MySQLContainer<>(

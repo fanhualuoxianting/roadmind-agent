@@ -1,4 +1,4 @@
-package com.roadmind.server.phase5;
+package com.roadmind.server.infrastructure;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -38,7 +38,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
 
 @Testcontainers(disabledWithoutDocker = true)
-class PhaseFivePersistenceTest {
+class PersistenceIntegrationTest {
 
     @Container
     private static final MySQLContainer<?> MYSQL = new MySQLContainer<>(
@@ -83,7 +83,7 @@ class PhaseFivePersistenceTest {
     }
 
     @BeforeEach
-    void cleanPhaseFiveRows() {
+    void cleanRows() {
         jdbcTemplate.update("DELETE FROM scheduled_task");
         jdbcTemplate.update("DELETE FROM user_preference");
         jdbcTemplate.update("DELETE FROM audit_event");

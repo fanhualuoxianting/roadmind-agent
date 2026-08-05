@@ -1,14 +1,10 @@
-package com.roadmind.server.phase5;
+package com.roadmind.server.agent;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.roadmind.server.agent.AgentTaskPersistence;
-import com.roadmind.server.agent.AgentTaskReplay;
-import com.roadmind.server.agent.AgentTaskSnapshot;
-import com.roadmind.server.agent.ConversationSnapshot;
 import com.roadmind.server.conversation.ConversationPersistence;
 import java.time.Instant;
 import java.util.List;
@@ -26,7 +22,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
 
 @Testcontainers(disabledWithoutDocker = true)
-class PhaseFiveAgentTaskPersistenceTest {
+class AgentTaskPersistenceIntegrationTest {
 
     @Container
     private static final MySQLContainer<?> MYSQL = new MySQLContainer<>(

@@ -24,7 +24,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
 
 @Testcontainers(disabledWithoutDocker = true)
-class PhaseFiveWorkflowCacheTest {
+class CoreWorkflowCacheIntegrationTest {
 
     @Container
     private static final GenericContainer<?> REDIS = new GenericContainer<>(
