@@ -150,8 +150,10 @@ jobs:
             fi
           done
 
-          if git ls-files 'qa-artifacts/**' 'ui-reference/**' 'docs/phase*-validation.md' | grep -q .; then
-            echo 'Local QA artifacts, design-reference dumps, or phase validation logs are tracked.'
+          tracked_artifacts="$(git ls-files | grep -E '^(qa-artifacts/|ui-reference/|docs/phase[^/]*-validation\.md$)' || true)"
+          if [[ -n "$tracked_artifacts" ]]; then
+            echo 'Local QA artifacts, design-reference dumps, or phase validation logs are tracked:'
+            printf '%s\n' "$tracked_artifacts"
             exit 1
           fi
 
