@@ -10,7 +10,15 @@
 
 > 本项目是求职与工程研究用途的数字孪生演示，与小米汽车或其他汽车厂商无官方关联，不连接真实车辆，也不执行真实车辆控制。
 
-![RoadMind Agent 工作台](ui-reference/01-agent-workbench.png)
+## 实际运行效果
+
+下面是本地真实启动后的 Agent 工作台，而不是纯设计稿：
+
+![RoadMind Agent 实际运行工作台](qa-artifacts/agent-running-latest.png)
+
+视觉基准稿：
+
+![RoadMind Agent 工作台设计基准](ui-reference/01-agent-workbench.png)
 
 ## 为什么值得看
 
@@ -19,7 +27,7 @@
 | 模型会不会乱调用工具 | 工具白名单、严格 JSON 输入、Bean Validation、调用数量上限和未知工具拒绝 |
 | 高风险动作谁来批准 | 服务端 Policy Gate 分级，确认绑定计划版本与 payload hash，模型不能自我授权 |
 | 外部服务失败怎么办 | 明确的 Live/Stub 来源标记、超时、有限重试、Circuit Breaker、Bulkhead 和稳定错误码 |
-| 重启后任务会不会消失 | MySQL 事实源、Redis 投影与回源、Agent/Workflow/Trip 快照和事务 Outbox |
+| 重启后任务会不会消失 | MySQL 事实源、用户隔离 Redis 投影、Agent/Workflow/Trip 快照、终态 SSE 重建和事务 Outbox |
 | 多用户数据会不会串 | 会话、Agent 任务和 Trip 的资源归属校验；Redis 降级快照同样绑定用户 |
 | 怎么证明不是“只会演示” | Maven/Vitest 自动化测试、30 条离线评测、GitHub Actions 和可复现验证脚本 |
 
@@ -51,7 +59,8 @@ flowchart LR
 - `vehicle.get_status`、`weather.get_forecast`、`route.plan` 三个强类型只读工具；
 - 非法 JSON 受限修复、未知工具拒绝、16 KiB 参数上限；
 - 版本化 DAG、服务端风险分级、确认绑定与 Verifier 回查；
-- 提示注入高风险信号、审计脱敏、固定窗口限流和 SSE 连接上限；
+- 提示注入高风险信号、审计脱敏、原子固定窗口限流和 SSE 连接上限；
+- Agent 与工具执行队列均设置硬容量，过载时返回稳定终态而不是无界占用内存；
 - 受令牌保护的独立 MCP 只读桥，不能绕过主服务 Policy Gate。
 
 ### 出行数字孪生
@@ -66,6 +75,8 @@ flowchart LR
 
 - Flyway V1–V9、MySQL 事实源与 Redis 缓存/协调层；
 - 对话上下文、Agent 任务、Workflow、Trip、偏好和定时任务恢复；
+- MySQL 暂时不可用时，已有用户隔离会话与 Agent 任务可从 Redis 投影恢复；
+- 重启前未完成的 Agent 任务会明确转为 `AGENT_RESTARTED`，不会永久伪装成运行中；
 - `Idempotency-Key` 重放与参数冲突检测；
 - Trip 事务 Outbox、租约恢复和跨用户资源隔离；
 - Resilience4j Retry、Circuit Breaker 与 Bulkhead。
@@ -93,6 +104,7 @@ roadmind-agent/
 ├─ roadmind-evaluation/   # 30 条离线评测 fixture 与运行器
 ├─ docs/                  # 架构、安全、API、数据库和阶段验收文档
 ├─ ui-reference/          # 六张正式视觉基准图
+├─ qa-artifacts/          # 本地真实运行与 QA 截图
 ├─ scripts/               # 本地验证脚本
 └─ docker-compose.yml     # MySQL + Redis
 ```
@@ -215,7 +227,7 @@ GitHub Actions 将后端、前端、离线评测和仓库卫生拆分为独立 J
 
 - 车辆、家庭设备、位置和遥测均为数字孪生或 Stub；
 - `demo` Profile 只允许本机回环地址自动登录，不能直接作为生产认证方案；
-- MySQL 是事实源，Redis 是缓存与降级恢复投影；
+- MySQL 是事实源，Redis 是用户隔离的缓存与短期降级恢复投影；
 - 离线评测验证确定性基线与安全规则，不代表任意真实模型的通用质量；
 - 未实现真实厂商车控、多租户 SaaS、生产级密钥托管或公网 MCP 托管。
 
