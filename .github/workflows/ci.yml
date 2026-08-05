@@ -3,16 +3,25 @@ name: roadmind-ci
 on:
   push:
   pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: roadmind-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
-  verify:
+  backend:
+    name: Backend and integration tests
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Set up Java 21
         uses: actions/setup-java@v4
@@ -21,8 +30,21 @@ jobs:
           java-version: '21'
           cache: maven
 
-      - name: Backend tests
-        run: ./mvnw -B test
+      - name: Verify Maven wrapper
+        run: test -x ./mvnw
+
+      - name: Run backend verification
+        run: ./mvnw -B -ntp verify
+
+  frontend:
+    name: Frontend tests and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Set up Node 24
         uses: actions/setup-node@v4
@@ -31,23 +53,67 @@ jobs:
           cache: npm
           cache-dependency-path: roadmind-web/package-lock.json
 
-      - name: Frontend checks
+      - name: Install dependencies
         working-directory: roadmind-web
-        run: |
-          npm ci
-          npm run type-check
-          npm run test -- --run
-          npm run build
+        run: npm ci
 
-      - name: Offline evaluation
-        run: |
-          python3 roadmind-evaluation/run_evaluation.py --output /tmp/roadmind-evaluation.json
-          python3 -m unittest discover -s roadmind-evaluation -p 'test_*.py'
+      - name: Run unit tests
+        working-directory: roadmind-web
+        run: npm run test -- --run
 
-      - name: Secret scan
+      - name: Type-check and build
+        working-directory: roadmind-web
+        run: npm run build
+
+  evaluation:
+    name: Offline agent evaluation
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Compile evaluation sources
+        run: python -m compileall -q roadmind-evaluation
+
+      - name: Run evaluation fixtures
+        run: python roadmind-evaluation/run_evaluation.py --output /tmp/roadmind-evaluation.json
+
+      - name: Run evaluation tests
+        run: python -m unittest discover -s roadmind-evaluation -p 'test_*.py'
+
+      - name: Upload evaluation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: roadmind-evaluation-report
+          path: /tmp/roadmind-evaluation.json
+          if-no-files-found: error
+
+  repository-hygiene:
+    name: Repository hygiene
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Validate Compose configuration
+        run: docker compose --env-file .env.example config > /dev/null
+
+      - name: Scan tracked files for common secret formats
         shell: bash
         run: |
-          if git grep -n -I -E 'sk-[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN (RSA |EC )?PRIVATE KEY-----'; then
+          if git grep -n -I -E '(sk|rk)-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN (RSA |EC )?PRIVATE KEY-----'; then
             echo 'Potential secret detected in tracked files.'
             exit 1
           fi

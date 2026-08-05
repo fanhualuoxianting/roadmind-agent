@@ -1,6 +1,9 @@
 package com.roadmind.server.agent;
 
 import com.roadmind.server.audit.AuditService;
+import com.roadmind.server.conversation.ConversationContextService;
+import com.roadmind.server.conversation.ConversationContextSnapshot;
+import com.roadmind.server.preference.PreferenceService;
 import com.roadmind.server.route.RouteSummary;
 import com.roadmind.server.tool.ToolExecutionContext;
 import com.roadmind.server.tool.ToolExecutionResult;
@@ -24,12 +27,9 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import org.springframework.stereotype.Service;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
-import com.roadmind.server.preference.PreferenceService;
-import com.roadmind.server.conversation.ConversationContextService;
-import com.roadmind.server.conversation.ConversationContextSnapshot;
 
 @Service
 public class AgentWorkflowService {
@@ -47,6 +47,7 @@ public class AgentWorkflowService {
     private final ExecutorService executor;
     private final Map<String, IdempotencyEntry> conversationRequests = new ConcurrentHashMap<>();
     private final Map<String, IdempotencyEntry> taskRequests = new ConcurrentHashMap<>();
+    private final Map<String, String> conversationOwners = new ConcurrentHashMap<>();
     private final Map<String, String> taskOwners = new ConcurrentHashMap<>();
 
     public AgentWorkflowService(
@@ -82,6 +83,7 @@ public class AgentWorkflowService {
             String title,
             String timezone,
             String idempotencyKey) {
+        requireUserId(userId);
         parseTimezone(timezone);
         String scopeKey = userId + ":conversation:" + idempotencyKey;
         String fingerprint = sha256(title + "\n" + timezone);
@@ -89,10 +91,11 @@ public class AgentWorkflowService {
             IdempotencyEntry existing = conversationRequests.get(scopeKey);
             if (existing != null) {
                 ensureSame(existing, fingerprint);
-                return store.requireConversation(existing.resourceId());
+                return ensureConversation(userId, existing.resourceId());
             }
             ConversationSnapshot conversation = store.createConversation(title, timezone);
             contextService.created(userId, conversation);
+            registerOwner(conversationOwners, conversation.conversationId(), userId, "会话");
             conversationRequests.put(
                     scopeKey,
                     new IdempotencyEntry(fingerprint, conversation.conversationId()));
@@ -107,6 +110,7 @@ public class AgentWorkflowService {
             String timezone,
             String idempotencyKey,
             String traceId) {
+        requireUserId(userId);
         ConversationSnapshot conversation = ensureConversation(userId, conversationId);
         ZoneId zoneId = parseTimezone(timezone == null || timezone.isBlank() ? conversation.timezone() : timezone);
         String effectiveMessage = preferenceService.getIfAvailable() == null
@@ -119,7 +123,7 @@ public class AgentWorkflowService {
             IdempotencyEntry existing = taskRequests.get(scopeKey);
             if (existing != null) {
                 ensureSame(existing, fingerprint);
-                AgentTaskSnapshot original = store.requireTask(existing.resourceId());
+                AgentTaskSnapshot original = getTask(existing.resourceId(), userId);
                 return accepted(original.taskId(), original.status());
             }
 
@@ -131,9 +135,9 @@ public class AgentWorkflowService {
                 ensureSame(durableReplay.get().requestHash(), fingerprint);
                 AgentTaskSnapshot recovered = durableReplay.get().snapshot();
                 store.restoreTask(recovered);
-                taskOwners.put(recovered.taskId(), userId);
+                registerOwner(taskOwners, recovered.taskId(), userId, "Agent 任务");
                 taskCache.putIdempotency(userId, conversationId, idempotencyKey, fingerprint, recovered.taskId());
-                taskCache.putSnapshot(recovered);
+                taskCache.putSnapshot(userId, recovered);
                 taskRequests.put(scopeKey, new IdempotencyEntry(fingerprint, recovered.taskId()));
                 return accepted(recovered.taskId(), recovered.status());
             }
@@ -145,7 +149,7 @@ public class AgentWorkflowService {
                     ensureSame(cachedReplay.get().requestHash(), fingerprint);
                     AgentTaskSnapshot recovered = cachedReplay.get().snapshot();
                     store.restoreTask(recovered);
-                    taskOwners.put(recovered.taskId(), userId);
+                    registerOwner(taskOwners, recovered.taskId(), userId, "Agent 任务");
                     taskRequests.put(scopeKey, new IdempotencyEntry(fingerprint, recovered.taskId()));
                     return accepted(recovered.taskId(), recovered.status());
                 }
@@ -159,10 +163,10 @@ public class AgentWorkflowService {
                     idempotencyKey,
                     fingerprint,
                     task);
+            registerOwner(taskOwners, task.taskId(), userId, "Agent 任务");
             taskCache.putIdempotency(userId, conversationId, idempotencyKey, fingerprint, task.taskId());
-            taskCache.putSnapshot(task);
+            taskCache.putSnapshot(userId, task);
             taskRequests.put(scopeKey, new IdempotencyEntry(fingerprint, task.taskId()));
-            taskOwners.put(task.taskId(), userId);
         }
 
         eventHub.create(task.taskId());
@@ -176,29 +180,24 @@ public class AgentWorkflowService {
         return accepted(task.taskId(), "PLANNING");
     }
 
-    public AgentTaskSnapshot getTask(String taskId) {
-        return getTask(taskId, null);
-    }
-
     public AgentTaskSnapshot getTask(String taskId, String userId) {
+        requireUserId(userId);
         assertTaskOwner(taskId, userId);
         try {
             return store.requireTask(taskId);
         } catch (AgentResourceNotFoundException exception) {
-            Optional<AgentTaskSnapshot> durable = taskPersistence.isAvailable()
-                    ? userId == null
-                    ? taskPersistence.findById(taskId)
-                    : taskPersistence.findByIdForUser(taskId, userId)
-                    : taskCache.getSnapshot(taskId);
+            Optional<AgentTaskSnapshot> durable;
+            if (taskPersistence.isAvailable()) {
+                durable = taskPersistence.findByIdForUser(taskId, userId);
+            } else {
+                durable = taskCache.getSnapshot(userId, taskId);
+            }
             AgentTaskSnapshot recovered = durable.orElseThrow(() -> exception);
+            registerOwner(taskOwners, taskId, userId, "Agent 任务");
             store.restoreTask(recovered);
-            if (userId != null) taskOwners.put(taskId, userId);
-            return recovered;
+            taskCache.putSnapshot(userId, recovered);
+            return store.requireTask(taskId);
         }
-    }
-
-    public SseEmitter events(String taskId) {
-        return events(taskId, null);
     }
 
     public SseEmitter events(String taskId, String userId) {
@@ -212,11 +211,11 @@ public class AgentWorkflowService {
             if (risk.blocked()) {
                 audit.record("agent.prompt_injection.blocked", "POLICY", traceId, taskId, Map.of(
                         "signals", risk.signals()));
-                fail(taskId, traceId, "PROMPT_INJECTION_BLOCKED", "检测到提示注入风险，已阻止工具规划");
+                fail(userId, taskId, traceId, "PROMPT_INJECTION_BLOCKED", "检测到提示注入风险，已阻止工具规划");
                 return;
             }
             store.planning(taskId);
-            persistTask(taskId);
+            persistTask(userId, taskId);
             publish(taskId, traceId, "agent.task.updated", Map.of(
                     "status", "PLANNING",
                     "phase", "ANALYZING"));
@@ -226,7 +225,7 @@ public class AgentWorkflowService {
                     timezone,
                     VehicleApplicationService.API_VEHICLE_ID));
             store.planned(taskId, decision);
-            persistTask(taskId);
+            persistTask(userId, taskId);
             publish(taskId, traceId, "agent.plan.created", Map.of(
                     "plannerMode", decision.mode().name(),
                     "modelName", decision.modelName(),
@@ -240,7 +239,7 @@ public class AgentWorkflowService {
                     "degraded", decision.degraded()));
 
             store.running(taskId);
-            persistTask(taskId);
+            persistTask(userId, taskId);
             publish(taskId, traceId, "agent.task.updated", Map.of(
                     "status", "RUNNING",
                     "totalToolCalls", decision.plan().toolCalls().size()));
@@ -260,7 +259,7 @@ public class AgentWorkflowService {
                         new ToolExecutionContext(userId, taskId, traceId));
                 results.add(result);
                 store.addToolCall(taskId, snapshot(result));
-                persistTask(taskId);
+                persistTask(userId, taskId);
                 Map<String, Object> completedData = new LinkedHashMap<>();
                 completedData.put("callId", callId);
                 completedData.put("executionId", result.executionId());
@@ -289,7 +288,7 @@ public class AgentWorkflowService {
                     : successCount == 0 ? "FAILED" : "PARTIAL_SUCCESS";
             String response = composeResponse(decision, results);
             store.complete(taskId, status, response);
-            persistTask(taskId);
+            persistTask(userId, taskId);
             publish(taskId, traceId, "agent.response.ready", Map.of(
                     "status", status,
                     "response", response,
@@ -300,19 +299,19 @@ public class AgentWorkflowService {
                     "status", status,
                     "toolCount", results.size()));
         } catch (AgentModelUnavailableException exception) {
-            fail(taskId, traceId, "MODEL_UNAVAILABLE", exception.getMessage());
+            fail(userId, taskId, traceId, "MODEL_UNAVAILABLE", exception.getMessage());
         } catch (InvalidModelOutputException exception) {
-            fail(taskId, traceId, "PLAN_INVALID", exception.getMessage());
+            fail(userId, taskId, traceId, "PLAN_INVALID", exception.getMessage());
         } catch (Exception exception) {
-            fail(taskId, traceId, "AGENT_WORKFLOW_FAILED", "Agent 处理失败，请根据 traceId 检查日志");
+            fail(userId, taskId, traceId, "AGENT_WORKFLOW_FAILED", "Agent 处理失败，请根据 traceId 检查日志");
         } finally {
             eventHub.complete(taskId);
         }
     }
 
-    private void fail(String taskId, String traceId, String code, String message) {
+    private void fail(String userId, String taskId, String traceId, String code, String message) {
         store.complete(taskId, code, message);
-        persistTask(taskId);
+        persistTask(userId, taskId);
         publish(taskId, traceId, "stream.error", Map.of(
                 "code", code,
                 "message", message,
@@ -377,36 +376,79 @@ public class AgentWorkflowService {
     }
 
     private ConversationSnapshot ensureConversation(String userId, String conversationId) {
-        try {
-            return store.requireConversation(conversationId);
-        } catch (AgentResourceNotFoundException exception) {
-            ConversationContextSnapshot recovered = contextService.recover(userId, conversationId)
-                    .orElseThrow(() -> exception);
-            store.restoreConversation(new ConversationSnapshot(
-                    recovered.conversationId(),
-                    recovered.title(),
-                    recovered.status(),
-                    recovered.timezone(),
-                    recovered.createdAt()));
+        String owner = conversationOwners.get(conversationId);
+        if (owner != null) {
+            if (!owner.equals(userId)) {
+                throw new AgentResourceNotFoundException("会话", conversationId);
+            }
             return store.requireConversation(conversationId);
         }
+
+        ConversationContextSnapshot recovered = contextService.recover(userId, conversationId)
+                .orElseThrow(() -> new AgentResourceNotFoundException("会话", conversationId));
+        store.restoreConversation(new ConversationSnapshot(
+                recovered.conversationId(),
+                recovered.title(),
+                recovered.status(),
+                recovered.timezone(),
+                recovered.createdAt()));
+        registerOwner(conversationOwners, conversationId, userId, "会话");
+        return store.requireConversation(conversationId);
     }
 
-    private void persistTask(String taskId) {
+    private void persistTask(String userId, String taskId) {
+        assertKnownOwner(taskOwners, taskId, userId, "Agent 任务");
         AgentTaskSnapshot snapshot = store.requireTask(taskId);
         taskPersistence.save(snapshot);
-        taskCache.putSnapshot(snapshot);
+        taskCache.putSnapshot(userId, snapshot);
     }
 
     private void assertTaskOwner(String taskId, String userId) {
-        if (userId == null || userId.isBlank()) return;
         String owner = taskOwners.get(taskId);
-        if (owner != null && !owner.equals(userId)) {
+        if (owner != null) {
+            if (!owner.equals(userId)) {
+                throw new AgentResourceNotFoundException("Agent 任务", taskId);
+            }
+            return;
+        }
+        if (taskPersistence.isAvailable()) {
+            if (taskPersistence.findByIdForUser(taskId, userId).isEmpty()) {
+                throw new AgentResourceNotFoundException("Agent 任务", taskId);
+            }
+            registerOwner(taskOwners, taskId, userId, "Agent 任务");
+            return;
+        }
+        if (taskCache.getSnapshot(userId, taskId).isEmpty()) {
             throw new AgentResourceNotFoundException("Agent 任务", taskId);
         }
-        if (owner == null && taskPersistence.isAvailable()
-                && taskPersistence.findByIdForUser(taskId, userId).isEmpty()) {
-            throw new AgentResourceNotFoundException("Agent 任务", taskId);
+        registerOwner(taskOwners, taskId, userId, "Agent 任务");
+    }
+
+    private void requireUserId(String userId) {
+        if (userId == null || userId.isBlank()) {
+            throw new IllegalArgumentException("userId 不能为空");
+        }
+    }
+
+    private void registerOwner(
+            Map<String, String> owners,
+            String resourceId,
+            String userId,
+            String resourceName) {
+        String existing = owners.putIfAbsent(resourceId, userId);
+        if (existing != null && !existing.equals(userId)) {
+            throw new AgentResourceNotFoundException(resourceName, resourceId);
+        }
+    }
+
+    private void assertKnownOwner(
+            Map<String, String> owners,
+            String resourceId,
+            String userId,
+            String resourceName) {
+        String owner = owners.get(resourceId);
+        if (owner == null || !owner.equals(userId)) {
+            throw new AgentResourceNotFoundException(resourceName, resourceId);
         }
     }
 
