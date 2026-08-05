@@ -17,6 +17,7 @@ import com.roadmind.server.tool.ToolExecutionResult;
 import com.roadmind.server.tool.ToolRiskLevel;
 import com.roadmind.server.tool.ToolRuntime;
 import java.time.Duration;
+import java.time.Instant;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.server.ResponseStatusException;
@@ -47,8 +48,23 @@ class InternalToolControllerTest {
         ToolRuntime tools = mock(ToolRuntime.class);
         InternalToolController controller = new InternalToolController(tools, "local-secret-token");
         JsonNode arguments = new ObjectMapper().createObjectNode();
-        ToolExecutionResult expected = mock(ToolExecutionResult.class);
-        when(tools.descriptor("demo.read")).thenReturn(descriptor(ToolRiskLevel.READ_ONLY));
+        Instant now = Instant.parse("2026-08-05T00:00:00Z");
+        ToolExecutionResult expected = new ToolExecutionResult(
+                true,
+                "demo.read",
+                "1.0.0",
+                "execution-1",
+                "ok",
+                null,
+                null,
+                false,
+                1,
+                now,
+                now,
+                0,
+                "trace-1");
+        when(tools.descriptor("demo.read"))
+                .thenReturn(descriptor("demo.read", ToolRiskLevel.READ_ONLY));
         when(tools.execute(eq("demo.read"), same(arguments), any(ToolExecutionContext.class)))
                 .thenReturn(expected);
 
@@ -62,7 +78,8 @@ class InternalToolControllerTest {
     void validTokenStillCannotExecuteWriteTool() {
         ToolRuntime tools = mock(ToolRuntime.class);
         InternalToolController controller = new InternalToolController(tools, "local-secret-token");
-        when(tools.descriptor("demo.write")).thenReturn(descriptor(ToolRiskLevel.HIGH_RISK_WRITE));
+        when(tools.descriptor("demo.write"))
+                .thenReturn(descriptor("demo.write", ToolRiskLevel.HIGH_RISK_WRITE));
 
         assertThatThrownBy(() -> controller.execute(
                 "demo.write",
@@ -74,9 +91,9 @@ class InternalToolControllerTest {
                         .isEqualTo(HttpStatus.FORBIDDEN));
     }
 
-    private ToolDescriptor descriptor(ToolRiskLevel riskLevel) {
+    private ToolDescriptor descriptor(String name, ToolRiskLevel riskLevel) {
         return new ToolDescriptor(
-                "demo",
+                name,
                 "1.0.0",
                 "test",
                 riskLevel,
