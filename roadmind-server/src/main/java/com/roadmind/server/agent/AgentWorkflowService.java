@@ -23,16 +23,23 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
-import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 @Service
 public class AgentWorkflowService {
+
+    private static final int WORKFLOW_THREADS = 2;
+    private static final int WORKFLOW_QUEUE_CAPACITY = 64;
 
     private final InMemoryAgentStore store;
     private final AgentEventHub eventHub;
@@ -50,6 +57,7 @@ public class AgentWorkflowService {
     private final Map<String, String> conversationOwners = new ConcurrentHashMap<>();
     private final Map<String, String> taskOwners = new ConcurrentHashMap<>();
 
+    @Autowired
     public AgentWorkflowService(
             InMemoryAgentStore store,
             AgentEventHub eventHub,
@@ -61,6 +69,32 @@ public class AgentWorkflowService {
             AgentTaskCache taskCache,
             PromptRiskScanner promptRiskScanner,
             AuditService audit) {
+        this(
+                store,
+                eventHub,
+                planner,
+                toolRuntime,
+                preferenceService,
+                contextService,
+                taskPersistence,
+                taskCache,
+                promptRiskScanner,
+                audit,
+                createExecutor());
+    }
+
+    AgentWorkflowService(
+            InMemoryAgentStore store,
+            AgentEventHub eventHub,
+            AgentPlannerRouter planner,
+            ToolRuntime toolRuntime,
+            ObjectProvider<PreferenceService> preferenceService,
+            ConversationContextService contextService,
+            AgentTaskPersistence taskPersistence,
+            AgentTaskCache taskCache,
+            PromptRiskScanner promptRiskScanner,
+            AuditService audit,
+            ExecutorService executor) {
         this.store = store;
         this.eventHub = eventHub;
         this.planner = planner;
@@ -71,11 +105,7 @@ public class AgentWorkflowService {
         this.taskCache = taskCache;
         this.promptRiskScanner = promptRiskScanner;
         this.audit = audit;
-        this.executor = Executors.newFixedThreadPool(2, runnable -> {
-            Thread thread = new Thread(runnable, "roadmind-agent-workflow");
-            thread.setDaemon(true);
-            return thread;
-        });
+        this.executor = executor;
     }
 
     public ConversationSnapshot createConversation(
@@ -174,10 +204,14 @@ public class AgentWorkflowService {
                 "messageSha256", fingerprint,
                 "messageLength", effectiveMessage.length(),
                 "timezone", zoneId.getId()));
-        CompletableFuture.runAsync(
-                () -> process(userId, task.taskId(), effectiveMessage, zoneId, traceId),
-                executor);
-        return accepted(task.taskId(), "PLANNING");
+        try {
+            executor.execute(() -> process(userId, task.taskId(), effectiveMessage, zoneId, traceId));
+            return accepted(task.taskId(), "PLANNING");
+        } catch (RejectedExecutionException exception) {
+            fail(userId, task.taskId(), traceId, "AGENT_BUSY", "Agent 当前任务过多，请稍后重新提交");
+            eventHub.complete(task.taskId());
+            return accepted(task.taskId(), "AGENT_BUSY");
+        }
     }
 
     public AgentTaskSnapshot getTask(String taskId, String userId) {
@@ -315,7 +349,7 @@ public class AgentWorkflowService {
         publish(taskId, traceId, "stream.error", Map.of(
                 "code", code,
                 "message", message,
-                "recoverable", "MODEL_UNAVAILABLE".equals(code)));
+                "recoverable", "MODEL_UNAVAILABLE".equals(code) || "AGENT_BUSY".equals(code)));
         publish(taskId, traceId, "agent.response.ready", Map.of(
                 "status", code,
                 "response", message,
@@ -483,6 +517,24 @@ public class AgentWorkflowService {
         } catch (Exception exception) {
             throw new IllegalStateException("SHA-256 不可用", exception);
         }
+    }
+
+    private static ExecutorService createExecutor() {
+        AtomicInteger threadSequence = new AtomicInteger();
+        return new ThreadPoolExecutor(
+                WORKFLOW_THREADS,
+                WORKFLOW_THREADS,
+                0L,
+                TimeUnit.MILLISECONDS,
+                new ArrayBlockingQueue<>(WORKFLOW_QUEUE_CAPACITY),
+                runnable -> {
+                    Thread thread = new Thread(
+                            runnable,
+                            "roadmind-agent-workflow-" + threadSequence.incrementAndGet());
+                    thread.setDaemon(true);
+                    return thread;
+                },
+                new ThreadPoolExecutor.AbortPolicy());
     }
 
     @PreDestroy
