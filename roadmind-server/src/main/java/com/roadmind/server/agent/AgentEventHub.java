@@ -2,12 +2,15 @@ package com.roadmind.server.agent;
 
 import java.io.IOException;
 import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
@@ -17,9 +20,18 @@ public class AgentEventHub {
     private static final long EMITTER_TIMEOUT_MS = 65_000L;
     private static final int MAX_REPLAY_EVENTS = 100;
     private static final int MAX_ACTIVE_EMITTERS = 32;
+    private static final Duration COMPLETED_CHANNEL_RETENTION = Duration.ofMinutes(15);
 
     private final Map<String, Channel> channels = new ConcurrentHashMap<>();
-    private final Clock clock = Clock.systemUTC();
+    private final Clock clock;
+
+    public AgentEventHub() {
+        this(Clock.systemUTC());
+    }
+
+    AgentEventHub(Clock clock) {
+        this.clock = clock;
+    }
 
     public void create(String taskId) {
         channels.putIfAbsent(taskId, new Channel(taskId));
@@ -38,6 +50,16 @@ public class AgentEventHub {
         return channel(taskId).subscribe();
     }
 
+    @Scheduled(fixedDelayString = "${roadmind.agent.events.cleanup-interval-ms:60000}")
+    void cleanupExpiredChannels() {
+        Instant cutoff = clock.instant().minus(COMPLETED_CHANNEL_RETENTION);
+        channels.entrySet().removeIf(entry -> entry.getValue().completedAtOrBefore(cutoff));
+    }
+
+    int channelCount() {
+        return channels.size();
+    }
+
     private Channel channel(String taskId) {
         Channel channel = channels.get(taskId);
         if (channel == null) {
@@ -52,6 +74,7 @@ public class AgentEventHub {
         private final List<SseEmitter> emitters = new ArrayList<>();
         private long sequence;
         private boolean completed;
+        private Instant completedAt;
 
         private Channel(String taskId) {
             this.taskId = taskId;
@@ -104,9 +127,17 @@ public class AgentEventHub {
         }
 
         synchronized void complete() {
+            if (completed) {
+                return;
+            }
             completed = true;
+            completedAt = clock.instant();
             emitters.forEach(SseEmitter::complete);
             emitters.clear();
+        }
+
+        synchronized boolean completedAtOrBefore(Instant cutoff) {
+            return completedAt != null && !completedAt.isAfter(cutoff);
         }
 
         private boolean send(SseEmitter emitter, AgentEventEnvelope event) {
