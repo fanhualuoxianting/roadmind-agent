@@ -24,6 +24,7 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
+import org.springframework.test.web.servlet.request.RequestPostProcessor;
 
 @SpringBootTest(properties = {
         "spring.flyway.enabled=false",
@@ -65,6 +66,7 @@ class CoreWorkflowApiOwnershipTest {
         String workflowId = alice.path("workflowId").asText();
 
         mockMvc.perform(get("/api/v1/workflows/{workflowId}", workflowId)
+                        .with(nonLoopback())
                         .with(user("bob")))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value("RESOURCE_NOT_FOUND"));
@@ -74,6 +76,7 @@ class CoreWorkflowApiOwnershipTest {
                 .put("planVersion", alice.path("planVersion").asInt())
                 .put("payloadHash", alice.path("confirmation").path("payloadHash").asText()));
         mockMvc.perform(post("/api/v1/workflows/{workflowId}/confirmation-decisions", workflowId)
+                        .with(nonLoopback())
                         .with(user("bob"))
                         .with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
@@ -92,6 +95,7 @@ class CoreWorkflowApiOwnershipTest {
         MvcResult result = mockMvc.perform(post(
                         "/api/v1/conversations/{conversationId}/workflow-messages",
                         conversationId)
+                        .with(nonLoopback())
                         .with(user(username))
                         .with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
@@ -100,5 +104,12 @@ class CoreWorkflowApiOwnershipTest {
                 .andExpect(jsonPath("$.data.status").value("WAITING_CONFIRMATION"))
                 .andReturn();
         return objectMapper.readTree(result.getResponse().getContentAsByteArray()).path("data");
+    }
+
+    private RequestPostProcessor nonLoopback() {
+        return request -> {
+            request.setRemoteAddr("203.0.113.10");
+            return request;
+        };
     }
 }
