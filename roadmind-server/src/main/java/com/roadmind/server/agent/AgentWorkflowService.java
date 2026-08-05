@@ -22,6 +22,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
@@ -40,6 +41,7 @@ public class AgentWorkflowService {
 
     private static final int WORKFLOW_THREADS = 2;
     private static final int WORKFLOW_QUEUE_CAPACITY = 64;
+    private static final Set<String> IN_PROGRESS_STATUSES = Set.of("ACCEPTED", "PLANNING", "RUNNING");
 
     private final InMemoryAgentStore store;
     private final AgentEventHub eventHub;
@@ -163,11 +165,8 @@ public class AgentWorkflowService {
                     idempotencyKey);
             if (durableReplay.isPresent()) {
                 ensureSame(durableReplay.get().requestHash(), fingerprint);
-                AgentTaskSnapshot recovered = durableReplay.get().snapshot();
-                store.restoreTask(recovered);
-                registerOwner(taskOwners, recovered.taskId(), userId, "Agent 任务");
+                AgentTaskSnapshot recovered = restoreRecoveredTask(userId, durableReplay.get().snapshot());
                 taskCache.putIdempotency(userId, conversationId, idempotencyKey, fingerprint, recovered.taskId());
-                taskCache.putSnapshot(userId, recovered);
                 taskRequests.put(scopeKey, new IdempotencyEntry(fingerprint, recovered.taskId()));
                 return accepted(recovered.taskId(), recovered.status());
             }
@@ -176,9 +175,7 @@ public class AgentWorkflowService {
                     userId, conversationId, idempotencyKey);
             if (cachedReplay.isPresent()) {
                 ensureSame(cachedReplay.get().requestHash(), fingerprint);
-                AgentTaskSnapshot recovered = cachedReplay.get().snapshot();
-                store.restoreTask(recovered);
-                registerOwner(taskOwners, recovered.taskId(), userId, "Agent 任务");
+                AgentTaskSnapshot recovered = restoreRecoveredTask(userId, cachedReplay.get().snapshot());
                 taskRequests.put(scopeKey, new IdempotencyEntry(fingerprint, recovered.taskId()));
                 return accepted(recovered.taskId(), recovered.status());
             }
@@ -222,16 +219,18 @@ public class AgentWorkflowService {
             if (recovered.isEmpty()) {
                 recovered = taskCache.getSnapshot(userId, taskId);
             }
-            AgentTaskSnapshot snapshot = recovered.orElseThrow(() -> exception);
-            registerOwner(taskOwners, taskId, userId, "Agent 任务");
-            store.restoreTask(snapshot);
-            taskCache.putSnapshot(userId, snapshot);
-            return store.requireTask(taskId);
+            return restoreRecoveredTask(userId, recovered.orElseThrow(() -> exception));
         }
     }
 
     public SseEmitter events(String taskId, String userId) {
-        getTask(taskId, userId);
+        AgentTaskSnapshot task = getTask(taskId, userId);
+        if (!eventHub.hasChannel(taskId)) {
+            if (isInProgress(task.status())) {
+                throw new IllegalStateException("进行中的 Agent 任务缺少事件通道");
+            }
+            eventHub.restoreCompleted(task);
+        }
         return eventHub.subscribe(taskId);
     }
 
@@ -354,6 +353,25 @@ public class AgentWorkflowService {
         audit.record("agent.workflow.failed", "AGENT", traceId, taskId, Map.of(
                 "code", code,
                 "message", message));
+    }
+
+    private AgentTaskSnapshot restoreRecoveredTask(String userId, AgentTaskSnapshot snapshot) {
+        registerOwner(taskOwners, snapshot.taskId(), userId, "Agent 任务");
+        store.restoreTask(snapshot);
+        if (isInProgress(snapshot.status())) {
+            store.complete(
+                    snapshot.taskId(),
+                    "AGENT_RESTARTED",
+                    "服务重启中断了未完成的 Agent 任务，请重新提交");
+            persistTask(userId, snapshot.taskId());
+        } else {
+            taskCache.putSnapshot(userId, snapshot);
+        }
+        return store.requireTask(snapshot.taskId());
+    }
+
+    private boolean isInProgress(String status) {
+        return status != null && IN_PROGRESS_STATUSES.contains(status);
     }
 
     private String composeResponse(PlannerDecision decision, List<ToolExecutionResult> results) {
