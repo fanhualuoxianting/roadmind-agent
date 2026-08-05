@@ -172,17 +172,15 @@ public class AgentWorkflowService {
                 return accepted(recovered.taskId(), recovered.status());
             }
 
-            if (!taskPersistence.isAvailable()) {
-                Optional<AgentTaskReplay> cachedReplay = taskCache.findIdempotency(
-                        userId, conversationId, idempotencyKey);
-                if (cachedReplay.isPresent()) {
-                    ensureSame(cachedReplay.get().requestHash(), fingerprint);
-                    AgentTaskSnapshot recovered = cachedReplay.get().snapshot();
-                    store.restoreTask(recovered);
-                    registerOwner(taskOwners, recovered.taskId(), userId, "Agent 任务");
-                    taskRequests.put(scopeKey, new IdempotencyEntry(fingerprint, recovered.taskId()));
-                    return accepted(recovered.taskId(), recovered.status());
-                }
+            Optional<AgentTaskReplay> cachedReplay = taskCache.findIdempotency(
+                    userId, conversationId, idempotencyKey);
+            if (cachedReplay.isPresent()) {
+                ensureSame(cachedReplay.get().requestHash(), fingerprint);
+                AgentTaskSnapshot recovered = cachedReplay.get().snapshot();
+                store.restoreTask(recovered);
+                registerOwner(taskOwners, recovered.taskId(), userId, "Agent 任务");
+                taskRequests.put(scopeKey, new IdempotencyEntry(fingerprint, recovered.taskId()));
+                return accepted(recovered.taskId(), recovered.status());
             }
 
             contextService.appendUserMessage(userId, conversationId, effectiveMessage);
@@ -220,16 +218,14 @@ public class AgentWorkflowService {
         try {
             return store.requireTask(taskId);
         } catch (AgentResourceNotFoundException exception) {
-            Optional<AgentTaskSnapshot> durable;
-            if (taskPersistence.isAvailable()) {
-                durable = taskPersistence.findByIdForUser(taskId, userId);
-            } else {
-                durable = taskCache.getSnapshot(userId, taskId);
+            Optional<AgentTaskSnapshot> recovered = taskPersistence.findByIdForUser(taskId, userId);
+            if (recovered.isEmpty()) {
+                recovered = taskCache.getSnapshot(userId, taskId);
             }
-            AgentTaskSnapshot recovered = durable.orElseThrow(() -> exception);
+            AgentTaskSnapshot snapshot = recovered.orElseThrow(() -> exception);
             registerOwner(taskOwners, taskId, userId, "Agent 任务");
-            store.restoreTask(recovered);
-            taskCache.putSnapshot(userId, recovered);
+            store.restoreTask(snapshot);
+            taskCache.putSnapshot(userId, snapshot);
             return store.requireTask(taskId);
         }
     }
@@ -445,10 +441,7 @@ public class AgentWorkflowService {
             }
             return;
         }
-        if (taskPersistence.isAvailable()) {
-            if (taskPersistence.findByIdForUser(taskId, userId).isEmpty()) {
-                throw new AgentResourceNotFoundException("Agent 任务", taskId);
-            }
+        if (taskPersistence.findByIdForUser(taskId, userId).isPresent()) {
             registerOwner(taskOwners, taskId, userId, "Agent 任务");
             return;
         }
