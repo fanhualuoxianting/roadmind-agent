@@ -13,6 +13,8 @@ import com.roadmind.server.audit.AuditService;
 import com.roadmind.server.conversation.ConversationContextService;
 import com.roadmind.server.preference.PreferenceService;
 import com.roadmind.server.tool.ToolRuntime;
+import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.RejectedExecutionException;
@@ -102,6 +104,39 @@ class AgentWorkflowOwnershipTest {
 
         assertThat(service.getTask(accepted.taskId(), "alice").taskId()).isEqualTo(accepted.taskId());
         assertThatThrownBy(() -> service.getTask(accepted.taskId(), "bob"))
+                .isInstanceOf(AgentResourceNotFoundException.class);
+    }
+
+    @Test
+    void userScopedRedisSnapshotRecoversTaskWhenConfiguredDatabaseIsUnavailable() {
+        Instant now = Instant.parse("2026-08-05T00:00:00Z");
+        AgentTaskSnapshot cached = new AgentTaskSnapshot(
+                "199000000000000111",
+                "199000000000000011",
+                "恢复车辆查询",
+                "SUCCEEDED",
+                "RULE_STUB",
+                "roadmind-rule-fixture",
+                true,
+                false,
+                "已从缓存恢复",
+                List.of(),
+                0,
+                0,
+                now,
+                now);
+        when(taskPersistence.isAvailable()).thenReturn(true);
+        when(taskPersistence.findByIdForUser(cached.taskId(), "alice"))
+                .thenReturn(Optional.empty());
+        when(taskCache.getSnapshot("alice", cached.taskId()))
+                .thenReturn(Optional.of(cached));
+
+        AgentTaskSnapshot recovered = service.getTask(cached.taskId(), "alice");
+
+        assertThat(recovered.taskId()).isEqualTo(cached.taskId());
+        assertThat(recovered.status()).isEqualTo("SUCCEEDED");
+        assertThat(recovered.response()).isEqualTo("已从缓存恢复");
+        assertThatThrownBy(() -> service.getTask(cached.taskId(), "bob"))
                 .isInstanceOf(AgentResourceNotFoundException.class);
     }
 
