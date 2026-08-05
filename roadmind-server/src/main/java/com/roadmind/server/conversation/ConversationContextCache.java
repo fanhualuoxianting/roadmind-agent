@@ -112,10 +112,10 @@ public class ConversationContextCache {
                 snapshot.title(),
                 snapshot.status(),
                 snapshot.timezone(),
-                snapshot.createdAt(),
+                snapshot.createdAt().toString(),
                 snapshot.contextVersion(),
                 snapshot.recentMessages(),
-                snapshot.expiresAt()));
+                snapshot.expiresAt() == null ? null : snapshot.expiresAt().toString()));
     }
 
     private String contextKey(String username, String conversationId) {
@@ -143,9 +143,9 @@ public class ConversationContextCache {
             String title,
             String status,
             String timezone,
-            Instant createdAt,
+            String createdAt,
             int contextVersion,
             List<String> recentMessages,
-            Instant expiresAt) {
+            String expiresAt) {
     }
 }
