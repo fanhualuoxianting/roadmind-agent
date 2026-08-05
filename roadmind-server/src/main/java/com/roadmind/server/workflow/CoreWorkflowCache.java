@@ -5,9 +5,12 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.roadmind.server.workflow.CoreWorkflowModels.Confirmation;
 import com.roadmind.server.workflow.CoreWorkflowModels.Slot;
 import com.roadmind.server.workflow.CoreWorkflowModels.Snapshot;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Optional;
 import org.springframework.beans.factory.ObjectProvider;
@@ -15,13 +18,14 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
-/** Best-effort Redis projections for the Core Workflow; MySQL remains the source of truth. */
+/** Best-effort user-scoped Redis projections for the Core Workflow. */
 @Component
 public class CoreWorkflowCache {
 
-    private static final int SCHEMA_VERSION = 1;
+    private static final int SCHEMA_VERSION = 2;
     private static final Duration DEFAULT_TTL = Duration.ofHours(24);
     private static final Duration MIN_TTL = Duration.ofSeconds(1);
+    private static final String DEMO_USERNAME = "roadmind-demo";
 
     private final ObjectProvider<StringRedisTemplate> redisTemplateProvider;
     private final ObjectMapper objectMapper;
@@ -43,54 +47,68 @@ public class CoreWorkflowCache {
         this.clock = clock;
     }
 
-    public void put(Snapshot snapshot) {
+    public void put(String username, Snapshot snapshot) {
         StringRedisTemplate redis = redisTemplateProvider.getIfAvailable();
-        if (redis == null) {
+        if (redis == null || invalid(username) || snapshot == null) {
             return;
         }
         try {
             Duration stateTtl = ttl(snapshot);
             redis.opsForValue().set(
-                    stateKey(snapshot.workflowId()),
-                    objectMapper.writeValueAsString(new StateValue(SCHEMA_VERSION, snapshot)),
+                    stateKey(username, snapshot.workflowId()),
+                    objectMapper.writeValueAsString(new StateValue(
+                            SCHEMA_VERSION, username, snapshot.workflowId(), snapshot)),
                     stateTtl);
             redis.opsForValue().set(
-                    slotsKey(snapshot.workflowId()),
+                    slotsKey(username, snapshot.workflowId()),
                     objectMapper.writeValueAsString(new SlotsValue(
-                            SCHEMA_VERSION, snapshot.workflowId(), snapshot.contextVersion(), snapshot.slots())),
+                            SCHEMA_VERSION,
+                            username,
+                            snapshot.workflowId(),
+                            snapshot.contextVersion(),
+                            snapshot.slots())),
                     DEFAULT_TTL);
 
             Confirmation confirmation = snapshot.confirmation();
             if (confirmation != null && "PENDING".equals(confirmation.status())) {
                 redis.opsForValue().set(
-                        confirmationKey(snapshot.workflowId()),
+                        confirmationKey(username, snapshot.workflowId()),
                         objectMapper.writeValueAsString(new ConfirmationValue(
-                                SCHEMA_VERSION, snapshot.workflowId(), confirmation)),
+                                SCHEMA_VERSION,
+                                username,
+                                snapshot.workflowId(),
+                                confirmation)),
                         ttl(snapshot));
             } else {
-                redis.delete(confirmationKey(snapshot.workflowId()));
+                redis.delete(confirmationKey(username, snapshot.workflowId()));
             }
             redis.opsForValue().set(
-                    conversationIndexKey(snapshot.conversationId()),
+                    conversationIndexKey(username, snapshot.conversationId()),
                     snapshot.workflowId(),
                     DEFAULT_TTL);
         } catch (JsonProcessingException | RuntimeException ignored) {
-            // Redis is an optimization; the MySQL snapshot has already been written.
+            // Redis is an optimization; MySQL remains authoritative when available.
         }
     }
 
-    public Optional<Snapshot> get(String workflowId) {
+    void put(Snapshot snapshot) {
+        put(DEMO_USERNAME, snapshot);
+    }
+
+    public Optional<Snapshot> get(String username, String workflowId) {
         StringRedisTemplate redis = redisTemplateProvider.getIfAvailable();
-        if (redis == null) {
+        if (redis == null || invalid(username) || invalid(workflowId)) {
             return Optional.empty();
         }
         try {
-            String value = redis.opsForValue().get(stateKey(workflowId));
+            String value = redis.opsForValue().get(stateKey(username, workflowId));
             if (value == null || value.isBlank()) {
                 return Optional.empty();
             }
             StateValue cached = objectMapper.readValue(value, StateValue.class);
             if (cached.schemaVersion() != SCHEMA_VERSION
+                    || !username.equals(cached.username())
+                    || !workflowId.equals(cached.workflowId())
                     || cached.snapshot() == null
                     || !workflowId.equals(cached.snapshot().workflowId())
                     || isExpired(cached.snapshot())) {
@@ -102,31 +120,42 @@ public class CoreWorkflowCache {
         }
     }
 
-    public Optional<Snapshot> findByConversation(String conversationId) {
+    Optional<Snapshot> get(String workflowId) {
+        return get(DEMO_USERNAME, workflowId);
+    }
+
+    public Optional<Snapshot> findByConversation(String username, String conversationId) {
         StringRedisTemplate redis = redisTemplateProvider.getIfAvailable();
-        if (redis == null) {
+        if (redis == null || invalid(username) || invalid(conversationId)) {
             return Optional.empty();
         }
         try {
-            String workflowId = redis.opsForValue().get(conversationIndexKey(conversationId));
-            return workflowId == null || workflowId.isBlank() ? Optional.empty() : get(workflowId);
+            String workflowId = redis.opsForValue().get(conversationIndexKey(username, conversationId));
+            return workflowId == null || workflowId.isBlank()
+                    ? Optional.empty()
+                    : get(username, workflowId);
         } catch (RuntimeException ignored) {
             return Optional.empty();
         }
     }
 
-    public Optional<List<Slot>> getActiveSlots(String workflowId) {
+    Optional<Snapshot> findByConversation(String conversationId) {
+        return findByConversation(DEMO_USERNAME, conversationId);
+    }
+
+    public Optional<List<Slot>> getActiveSlots(String username, String workflowId) {
         StringRedisTemplate redis = redisTemplateProvider.getIfAvailable();
-        if (redis == null) {
+        if (redis == null || invalid(username) || invalid(workflowId)) {
             return Optional.empty();
         }
         try {
-            String value = redis.opsForValue().get(slotsKey(workflowId));
+            String value = redis.opsForValue().get(slotsKey(username, workflowId));
             if (value == null || value.isBlank()) {
                 return Optional.empty();
             }
             SlotsValue cached = objectMapper.readValue(value, SlotsValue.class);
             if (cached.schemaVersion() != SCHEMA_VERSION
+                    || !username.equals(cached.username())
                     || !workflowId.equals(cached.workflowId())) {
                 return Optional.empty();
             }
@@ -136,18 +165,23 @@ public class CoreWorkflowCache {
         }
     }
 
-    public Optional<Confirmation> getPendingConfirmation(String workflowId) {
+    Optional<List<Slot>> getActiveSlots(String workflowId) {
+        return getActiveSlots(DEMO_USERNAME, workflowId);
+    }
+
+    public Optional<Confirmation> getPendingConfirmation(String username, String workflowId) {
         StringRedisTemplate redis = redisTemplateProvider.getIfAvailable();
-        if (redis == null) {
+        if (redis == null || invalid(username) || invalid(workflowId)) {
             return Optional.empty();
         }
         try {
-            String value = redis.opsForValue().get(confirmationKey(workflowId));
+            String value = redis.opsForValue().get(confirmationKey(username, workflowId));
             if (value == null || value.isBlank()) {
                 return Optional.empty();
             }
             ConfirmationValue cached = objectMapper.readValue(value, ConfirmationValue.class);
             if (cached.schemaVersion() != SCHEMA_VERSION
+                    || !username.equals(cached.username())
                     || !workflowId.equals(cached.workflowId())
                     || cached.confirmation() == null
                     || !"PENDING".equals(cached.confirmation().status())
@@ -158,6 +192,10 @@ public class CoreWorkflowCache {
         } catch (JsonProcessingException | RuntimeException ignored) {
             return Optional.empty();
         }
+    }
+
+    Optional<Confirmation> getPendingConfirmation(String workflowId) {
+        return getPendingConfirmation(DEMO_USERNAME, workflowId);
     }
 
     private Duration ttl(Snapshot snapshot) {
@@ -177,27 +215,45 @@ public class CoreWorkflowCache {
                 && !confirmation.expiresAt().isAfter(clock.instant());
     }
 
-    private String stateKey(String workflowId) {
-        return "roadmind:workflow:" + workflowId + ":state";
+    private String stateKey(String username, String workflowId) {
+        return "roadmind:workflow:" + digest(username) + ':' + workflowId + ":state";
     }
 
-    private String slotsKey(String workflowId) {
-        return "roadmind:workflow:" + workflowId + ":slots";
+    private String slotsKey(String username, String workflowId) {
+        return "roadmind:workflow:" + digest(username) + ':' + workflowId + ":slots";
     }
 
-    private String confirmationKey(String workflowId) {
-        return "roadmind:workflow:" + workflowId + ":confirmation";
+    private String confirmationKey(String username, String workflowId) {
+        return "roadmind:workflow:" + digest(username) + ':' + workflowId + ":confirmation";
     }
 
-    private String conversationIndexKey(String conversationId) {
-        return "roadmind:conversation:" + conversationId + ":workflow";
+    private String conversationIndexKey(String username, String conversationId) {
+        return "roadmind:conversation:" + digest(username) + ':' + conversationId + ":workflow";
     }
 
-    private record StateValue(int schemaVersion, Snapshot snapshot) {
+    private String digest(String value) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                    .digest(value.getBytes(StandardCharsets.UTF_8)));
+        } catch (Exception exception) {
+            return Integer.toHexString(value.hashCode());
+        }
+    }
+
+    private boolean invalid(String value) {
+        return value == null || value.isBlank();
+    }
+
+    private record StateValue(
+            int schemaVersion,
+            String username,
+            String workflowId,
+            Snapshot snapshot) {
     }
 
     private record SlotsValue(
             int schemaVersion,
+            String username,
             String workflowId,
             int contextVersion,
             List<Slot> slots) {
@@ -205,6 +261,7 @@ public class CoreWorkflowCache {
 
     private record ConfirmationValue(
             int schemaVersion,
+            String username,
             String workflowId,
             Confirmation confirmation) {
     }
