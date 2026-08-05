@@ -35,7 +35,7 @@ class InfrastructureSmokeTest {
                 .load();
 
         assertThat(flyway.migrate().migrationsExecuted)
-                .as("the phase 1 through phase 10 schema must migrate from an empty database")
+                .as("all ten Flyway migrations must apply to an empty database")
                 .isEqualTo(10);
         assertThat(flyway.migrate().migrationsExecuted).isZero();
 
