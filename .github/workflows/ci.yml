@@ -140,12 +140,17 @@ jobs:
             design-qa.md
             README-TOTAL.md
             SHA256SUMS.txt
+            docs/api-draft.md
+            docs/database-design.md
             docs/development-plan.md
+            docs/map-and-trip-design.md
+            docs/requirements.md
+            docs/security-design.md
           )
 
           for path in "${forbidden_files[@]}"; do
             if git ls-files --error-unmatch "$path" >/dev/null 2>&1; then
-              echo "Local-only or generated artifact is tracked: $path"
+              echo "Stale, local-only, or generated artifact is tracked: $path"
               exit 1
             fi
           done
@@ -157,7 +162,7 @@ jobs:
             exit 1
           fi
 
-          if git grep -n -I -E '[A-Za-z]:\\(Users|Temp|codex-projects)\\|/Users/[^/]+/|/home/[^/]+/|file:///|codex-clipboard' -- . ':!.github/workflows/ci.yml'; then
-            echo 'A personal workstation path or clipboard artifact reference is tracked.'
+          if git grep -n -I -E '(^|[^[:alnum:]_])[A-Za-z]:\\|(^|[^[:alnum:]_])[A-Za-z]:/|/Users/[^/]+/|/home/[^/]+/|/tmp/|file:///|codex-clipboard' -- . ':!.github/workflows/ci.yml'; then
+            echo 'An absolute workstation path or clipboard artifact reference is tracked.'
             exit 1
           fi

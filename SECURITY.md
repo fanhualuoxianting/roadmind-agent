@@ -6,7 +6,7 @@ RoadMind Agent is a digital-twin engineering demo. It does not connect to a real
 
 ## Supported version
 
-Security fixes are applied to the latest commit on the `main` branch. Older snapshots and exported delivery packages are not maintained separately.
+Security fixes are applied to the latest commit on the `main` branch. Older commits are not maintained as supported releases.
 
 ## Reporting a vulnerability
 
