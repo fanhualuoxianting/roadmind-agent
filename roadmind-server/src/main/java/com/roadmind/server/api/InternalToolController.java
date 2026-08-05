@@ -6,6 +6,8 @@ import com.roadmind.server.tool.ToolExecutionContext;
 import com.roadmind.server.tool.ToolExecutionResult;
 import com.roadmind.server.tool.ToolRiskLevel;
 import com.roadmind.server.tool.ToolRuntime;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.UUID;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
@@ -38,8 +40,7 @@ public class InternalToolController {
             @RequestHeader("X-RoadMind-Internal-Token") String token,
             @RequestHeader(value = "X-MCP-Request-ID", required = false) String requestId,
             @RequestBody JsonNode arguments) {
-        if (internalToken == null || internalToken.isBlank() || "disabled".equals(internalToken)
-                || !internalToken.equals(token)) {
+        if (!validInternalToken(token)) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "internal token 无效");
         }
         if (tools.descriptor(toolName).riskLevel() != ToolRiskLevel.READ_ONLY) {
@@ -50,5 +51,17 @@ public class InternalToolController {
                 arguments,
                 new ToolExecutionContext("mcp", requestId == null ? UUID.randomUUID().toString() : requestId,
                         RequestTrace.current()));
+    }
+
+    boolean validInternalToken(String candidate) {
+        if (internalToken == null
+                || internalToken.isBlank()
+                || "disabled".equals(internalToken)
+                || candidate == null) {
+            return false;
+        }
+        return MessageDigest.isEqual(
+                internalToken.getBytes(StandardCharsets.UTF_8),
+                candidate.getBytes(StandardCharsets.UTF_8));
     }
 }
