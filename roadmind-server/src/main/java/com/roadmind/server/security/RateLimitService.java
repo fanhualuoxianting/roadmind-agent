@@ -8,6 +8,7 @@ import java.util.HexFormat;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
@@ -23,6 +24,7 @@ public class RateLimitService {
     private final Clock clock;
     private final int maxLocalWindows;
 
+    @Autowired
     public RateLimitService(ObjectProvider<StringRedisTemplate> redisProvider) {
         this(redisProvider, Clock.systemUTC(), DEFAULT_MAX_LOCAL_WINDOWS);
     }
