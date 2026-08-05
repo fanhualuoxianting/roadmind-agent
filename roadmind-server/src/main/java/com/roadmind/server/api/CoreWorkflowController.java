@@ -30,21 +30,32 @@ public class CoreWorkflowController {
     }
 
     @PostMapping("/conversations/{conversationId}/workflow-messages")
-    ApiResponse<Snapshot> message(@PathVariable String conversationId, @RequestBody MessageRequest request) {
-        return ApiResponse.ok(service.message(conversationId, request.message()));
+    ApiResponse<Snapshot> message(
+            Principal principal,
+            @PathVariable String conversationId,
+            @RequestBody MessageRequest request) {
+        return ApiResponse.ok(service.message(
+                principal.getName(),
+                conversationId,
+                request.message()));
     }
 
     @GetMapping("/workflows/{workflowId}")
-    ApiResponse<Snapshot> get(@PathVariable String workflowId) {
-        return ApiResponse.ok(service.get(workflowId));
+    ApiResponse<Snapshot> get(Principal principal, @PathVariable String workflowId) {
+        return ApiResponse.ok(service.get(principal.getName(), workflowId));
     }
 
     @PostMapping("/workflows/{workflowId}/confirmation-decisions")
     ApiResponse<Snapshot> decide(
+            Principal principal,
             @PathVariable String workflowId,
             @Valid @RequestBody ConfirmationRequest request) {
         return ApiResponse.ok(service.decide(
-                workflowId, request.decision(), request.planVersion(), request.payloadHash()));
+                principal.getName(),
+                workflowId,
+                request.decision(),
+                request.planVersion(),
+                request.payloadHash()));
     }
 
     @PostMapping("/workflows/{workflowId}/deferred-actions")
@@ -54,6 +65,7 @@ public class CoreWorkflowController {
             @RequestHeader("Idempotency-Key") String idempotencyKey,
             @Valid @RequestBody CreateDeferredActionRequest request) {
         DeferredActionAuthorization authorization = service.authorizeDeferredAction(
+                principal.getName(),
                 workflowId,
                 request.stepId(),
                 request.confirmationId(),
