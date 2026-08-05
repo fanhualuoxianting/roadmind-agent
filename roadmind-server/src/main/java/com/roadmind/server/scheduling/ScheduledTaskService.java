@@ -242,15 +242,23 @@ public class ScheduledTaskService {
                     || task.authorizationWorkflowId() == null
                     || task.authorizationStepId() == null
                     || task.authorizationConfirmationId() == null
+                    || task.authorizationPlanVersion() == null
                     || task.authorizationPayloadHash() == null) {
                 throw new IllegalStateException("家居任务缺少原始授权引用");
             }
             String deviceId = task.payload().path("deviceId").asText("");
             boolean on = task.payload().path("on").asBoolean();
-            homeDevices.setLight(deviceId, on,
+            homeDevices.setLight(
+                    deviceId,
+                    on,
                     task.authorizationWorkflowId() + "/" + task.authorizationConfirmationId());
-            workflowService.markDeferredActionSucceeded(
-                    task.authorizationWorkflowId(), task.authorizationStepId(), String.valueOf(task.id()));
+            workflowService.markDeferredActionSucceededAuthorized(
+                    task.authorizationWorkflowId(),
+                    task.authorizationStepId(),
+                    task.authorizationConfirmationId(),
+                    task.authorizationPlanVersion(),
+                    task.authorizationPayloadHash(),
+                    String.valueOf(task.id()));
             return;
         }
         throw new IllegalStateException("定时任务类型尚未接入执行器: " + task.taskType());
