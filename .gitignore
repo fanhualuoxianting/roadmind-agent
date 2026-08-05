@@ -45,6 +45,15 @@ playwright-report/
 # Offline evaluation reports are generated artifacts
 roadmind-evaluation/reports/*.json
 
+# Local QA, handoff, and generated delivery artifacts
+/design-qa.md
+/qa-artifacts/
+/ui-reference/
+/README-TOTAL.md
+/SHA256SUMS.txt
+/docs/phase*-validation.md
+/docs/development-plan.md
+
 # Python cache
 __pycache__/
 *.py[cod]

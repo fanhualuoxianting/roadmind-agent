@@ -37,7 +37,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          ./mvnw -B -ntp verify 2>&1 | tee /tmp/roadmind-maven-verify.log
+          ./mvnw -B -ntp verify 2>&1 | tee "$RUNNER_TEMP/roadmind-maven-verify.log"
 
       - name: Upload backend diagnostics
         if: always()
@@ -45,7 +45,7 @@ jobs:
         with:
           name: roadmind-backend-diagnostics
           path: |
-            /tmp/roadmind-maven-verify.log
+            ${{ runner.temp }}/roadmind-maven-verify.log
             **/target/surefire-reports/**
             **/target/failsafe-reports/**
           if-no-files-found: warn
@@ -99,7 +99,7 @@ jobs:
         run: python -m compileall -q roadmind-evaluation
 
       - name: Run evaluation fixtures
-        run: python roadmind-evaluation/run_evaluation.py --output /tmp/roadmind-evaluation.json
+        run: python roadmind-evaluation/run_evaluation.py --output "$RUNNER_TEMP/roadmind-evaluation.json"
 
       - name: Run evaluation tests
         run: python -m unittest discover -s roadmind-evaluation -p 'test_*.py'
@@ -109,7 +109,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: roadmind-evaluation-report
-          path: /tmp/roadmind-evaluation.json
+          path: ${{ runner.temp }}/roadmind-evaluation.json
           if-no-files-found: error
 
   repository-hygiene:
@@ -130,5 +130,32 @@ jobs:
         run: |
           if git grep -n -I -E '(sk|rk)-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN (RSA |EC )?PRIVATE KEY-----'; then
             echo 'Potential secret detected in tracked files.'
+            exit 1
+          fi
+
+      - name: Reject local handoff artifacts and personal paths
+        shell: bash
+        run: |
+          forbidden_files=(
+            design-qa.md
+            README-TOTAL.md
+            SHA256SUMS.txt
+            docs/development-plan.md
+          )
+
+          for path in "${forbidden_files[@]}"; do
+            if git ls-files --error-unmatch "$path" >/dev/null 2>&1; then
+              echo "Local-only or generated artifact is tracked: $path"
+              exit 1
+            fi
+          done
+
+          if git ls-files 'qa-artifacts/**' 'ui-reference/**' 'docs/phase*-validation.md' | grep -q .; then
+            echo 'Local QA artifacts, design-reference dumps, or phase validation logs are tracked.'
+            exit 1
+          fi
+
+          if git grep -n -I -E '[A-Za-z]:\\(Users|Temp|codex-projects)\\|/Users/[^/]+/|/home/[^/]+/|file:///|codex-clipboard' -- . ':!.github/workflows/ci.yml'; then
+            echo 'A personal workstation path or clipboard artifact reference is tracked.'
             exit 1
           fi
