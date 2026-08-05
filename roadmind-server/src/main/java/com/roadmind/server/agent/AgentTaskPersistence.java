@@ -11,6 +11,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.dao.EmptyResultDataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -35,6 +36,7 @@ public class AgentTaskPersistence {
         this.objectMapper = objectMapper;
     }
 
+    /** Returns whether persistence is configured, not whether the database is currently healthy. */
     public boolean isAvailable() {
         JdbcTemplate jdbcTemplate = jdbcTemplateProvider.getIfAvailable();
         return jdbcTemplate != null && jdbcTemplate.getDataSource() != null;
@@ -49,32 +51,36 @@ public class AgentTaskPersistence {
         if (!isAvailable()) {
             return;
         }
-        long userId = requireUserId(username);
         try {
-            jdbc().update("""
-                    INSERT INTO agent_task (
-                        id, conversation_id, user_id, idempotency_key, request_hash,
-                        goal, status, context_json, context_version, plan_version,
-                        lock_version, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 0, ?, ?)
-                    """,
-                    parseId(snapshot.taskId()),
-                    parseId(conversationId),
-                    userId,
-                    idempotencyKey,
-                    requestHash,
-                    snapshot.goal(),
-                    snapshot.status(),
-                    writeJson(snapshot),
-                    planVersion(snapshot),
-                    timestamp(snapshot.createdAt()),
-                    timestamp(snapshot.updatedAt()));
-        } catch (DuplicateKeyException exception) {
-            AgentTaskReplay replay = findByIdempotencyKey(userId, conversationId, idempotencyKey)
-                    .orElseThrow(() -> exception);
-            if (!requestHash.equals(replay.requestHash())) {
-                throw new AgentIdempotencyConflictException();
+            long userId = requireUserId(username);
+            try {
+                jdbc().update("""
+                        INSERT INTO agent_task (
+                            id, conversation_id, user_id, idempotency_key, request_hash,
+                            goal, status, context_json, context_version, plan_version,
+                            lock_version, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 0, ?, ?)
+                        """,
+                        parseId(snapshot.taskId()),
+                        parseId(conversationId),
+                        userId,
+                        idempotencyKey,
+                        requestHash,
+                        snapshot.goal(),
+                        snapshot.status(),
+                        writeJson(snapshot),
+                        planVersion(snapshot),
+                        timestamp(snapshot.createdAt()),
+                        timestamp(snapshot.updatedAt()));
+            } catch (DuplicateKeyException exception) {
+                AgentTaskReplay replay = findByIdempotencyKey(userId, conversationId, idempotencyKey)
+                        .orElseThrow(() -> exception);
+                if (!requestHash.equals(replay.requestHash())) {
+                    throw new AgentIdempotencyConflictException();
+                }
             }
+        } catch (DataAccessResourceFailureException ignored) {
+            // Redis and the in-memory workflow remain available during a database outage.
         }
     }
 
@@ -82,37 +88,50 @@ public class AgentTaskPersistence {
         if (!isAvailable()) {
             return;
         }
-        jdbc().update("""
-                UPDATE agent_task
-                SET goal = ?, status = ?, context_json = ?, plan_version = ?, updated_at = ?
-                WHERE id = ?
-                """,
-                snapshot.goal(),
-                snapshot.status(),
-                writeJson(snapshot),
-                planVersion(snapshot),
-                timestamp(snapshot.updatedAt()),
-                parseId(snapshot.taskId()));
+        try {
+            jdbc().update("""
+                    UPDATE agent_task
+                    SET goal = ?, status = ?, context_json = ?, plan_version = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    snapshot.goal(),
+                    snapshot.status(),
+                    writeJson(snapshot),
+                    planVersion(snapshot),
+                    timestamp(snapshot.updatedAt()),
+                    parseId(snapshot.taskId()));
+        } catch (DataAccessResourceFailureException ignored) {
+            // The caller still writes the user-scoped Redis projection.
+        }
     }
 
     public Optional<AgentTaskSnapshot> findById(String taskId) {
-        return query("SELECT id, conversation_id, request_hash, goal, status, context_json, "
-                + "created_at, updated_at FROM agent_task WHERE id = ?", parseId(taskId))
-                .stream()
-                .findFirst()
-                .map(this::snapshot);
+        if (!isAvailable()) return Optional.empty();
+        try {
+            return query("SELECT id, conversation_id, request_hash, goal, status, context_json, "
+                    + "created_at, updated_at FROM agent_task WHERE id = ?", parseId(taskId))
+                    .stream()
+                    .findFirst()
+                    .map(this::snapshot);
+        } catch (DataAccessResourceFailureException ignored) {
+            return Optional.empty();
+        }
     }
 
     public Optional<AgentTaskSnapshot> findByIdForUser(String taskId, String username) {
         if (!isAvailable()) return Optional.empty();
-        return query("SELECT id, conversation_id, request_hash, goal, status, context_json, "
-                + "created_at, updated_at FROM agent_task "
-                + "WHERE id = ? AND user_id = (SELECT id FROM `user` WHERE username = ? AND status = 'ACTIVE')",
-                parseId(taskId),
-                username)
-                .stream()
-                .findFirst()
-                .map(this::snapshot);
+        try {
+            return query("SELECT id, conversation_id, request_hash, goal, status, context_json, "
+                    + "created_at, updated_at FROM agent_task "
+                    + "WHERE id = ? AND user_id = (SELECT id FROM `user` WHERE username = ? AND status = 'ACTIVE')",
+                    parseId(taskId),
+                    username)
+                    .stream()
+                    .findFirst()
+                    .map(this::snapshot);
+        } catch (DataAccessResourceFailureException ignored) {
+            return Optional.empty();
+        }
     }
 
     public Optional<AgentTaskReplay> findByIdempotencyKey(
@@ -122,7 +141,11 @@ public class AgentTaskPersistence {
         if (!isAvailable()) {
             return Optional.empty();
         }
-        return findByIdempotencyKey(requireUserId(username), conversationId, idempotencyKey);
+        try {
+            return findByIdempotencyKey(requireUserId(username), conversationId, idempotencyKey);
+        } catch (DataAccessResourceFailureException ignored) {
+            return Optional.empty();
+        }
     }
 
     private Optional<AgentTaskReplay> findByIdempotencyKey(
