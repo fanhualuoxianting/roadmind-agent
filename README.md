@@ -28,7 +28,7 @@
 | 高风险动作谁来批准 | 服务端 Policy Gate 分级，确认绑定计划版本与 payload hash，模型不能自我授权 |
 | 外部服务失败怎么办 | 明确的 Live/Stub 来源标记、超时、有限重试、Circuit Breaker、Bulkhead 和稳定错误码 |
 | 重启后任务会不会消失 | MySQL 事实源、用户隔离 Redis 投影、Agent/Workflow/Trip 快照、终态 SSE 重建和事务 Outbox |
-| 多用户数据会不会串 | 会话、Agent 任务和 Trip 的资源归属校验；Redis 降级快照同样绑定用户 |
+| 多用户数据会不会串 | 会话、Agent 任务、Core Workflow 与 Trip 均校验资源归属；Redis 降级投影同样绑定用户 |
 | 怎么证明不是“只会演示” | Maven/Vitest 自动化测试、30 条离线评测、GitHub Actions 和可复现验证脚本 |
 
 ## 一条请求如何执行
@@ -73,7 +73,7 @@ flowchart LR
 
 ### 持久化与可靠性
 
-- Flyway V1–V9、MySQL 事实源与 Redis 缓存/协调层；
+- Flyway V1–V10、MySQL 事实源与 Redis 缓存/协调层；
 - 对话上下文、Agent 任务、Workflow、Trip、偏好和定时任务恢复；
 - MySQL 暂时不可用时，已有用户隔离会话与 Agent 任务可从 Redis 投影恢复；
 - 重启前未完成的 Agent 任务会明确转为 `AGENT_RESTARTED`，不会永久伪装成运行中；
@@ -221,7 +221,7 @@ python roadmind-evaluation/run_evaluation.py --output /tmp/roadmind-evaluation.j
 python -m unittest discover -s roadmind-evaluation -p 'test_*.py'
 ```
 
-GitHub Actions 将后端、前端、离线评测和仓库卫生拆分为独立 Job，便于快速定位失败原因；Dependabot 定期检查 Maven、npm 与 Actions 依赖。
+GitHub Actions 将后端、前端、离线评测和仓库卫生拆分为独立 Job，便于快速定位失败原因；后端任务会在成功或失败时上传 Maven/Surefire 诊断包，Dependabot 定期检查 Maven、npm 与 Actions 依赖。
 
 ## 设计边界
 
