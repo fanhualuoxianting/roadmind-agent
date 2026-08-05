@@ -3,10 +3,11 @@ package com.roadmind.server.conversation;
 import com.roadmind.server.agent.ConversationSnapshot;
 import java.time.Instant;
 import java.util.Optional;
+import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.stereotype.Service;
 
 /**
- * Coordinates durable conversation state, Redis caching, and restart recovery.
+ * Coordinates durable conversation state, user-scoped Redis caching, and restart recovery.
  */
 @Service
 public class ConversationContextService {
@@ -25,7 +26,12 @@ public class ConversationContextService {
         if (!persistence.isAvailable()) {
             return;
         }
-        persistence.create(conversation, username).ifPresent(cache::put);
+        try {
+            persistence.create(conversation, username)
+                    .ifPresent(snapshot -> cache.put(username, snapshot));
+        } catch (DataAccessResourceFailureException ignored) {
+            // The in-memory conversation remains usable while MySQL is unavailable.
+        }
     }
 
     public Optional<ConversationContextSnapshot> appendUserMessage(
@@ -35,33 +41,40 @@ public class ConversationContextService {
         if (!persistence.isAvailable()) {
             return Optional.empty();
         }
-        long userId = persistence.requireUserId(username);
-        Optional<ConversationContextSnapshot> snapshot = persistence.appendUserMessage(
-                userId,
-                conversationId,
-                content,
-                Instant.now());
-        snapshot.ifPresent(cache::put);
-        return snapshot;
+        try {
+            long userId = persistence.requireUserId(username);
+            Optional<ConversationContextSnapshot> snapshot = persistence.appendUserMessage(
+                    userId,
+                    conversationId,
+                    content,
+                    Instant.now());
+            snapshot.ifPresent(value -> cache.put(username, value));
+            return snapshot;
+        } catch (DataAccessResourceFailureException ignored) {
+            return Optional.empty();
+        }
     }
 
     public Optional<ConversationContextSnapshot> recover(
             String username,
             String conversationId) {
-        if (!persistence.isAvailable()) {
-            return Optional.empty();
-        }
-        long userId = persistence.requireUserId(username);
-        Optional<ConversationContextSnapshot> cached = cache.get(conversationId)
-                .filter(snapshot -> snapshot.userId() == userId);
+        Optional<ConversationContextSnapshot> cached = cache.get(username, conversationId);
         if (cached.isPresent()) {
             return cached;
         }
-        Optional<ConversationContextSnapshot> persistent = persistence.findActive(
-                userId,
-                conversationId,
-                Instant.now());
-        persistent.ifPresent(cache::put);
-        return persistent;
+        if (!persistence.isAvailable()) {
+            return Optional.empty();
+        }
+        try {
+            long userId = persistence.requireUserId(username);
+            Optional<ConversationContextSnapshot> persistent = persistence.findActive(
+                    userId,
+                    conversationId,
+                    Instant.now());
+            persistent.ifPresent(value -> cache.put(username, value));
+            return persistent;
+        } catch (DataAccessResourceFailureException ignored) {
+            return Optional.empty();
+        }
     }
 }
