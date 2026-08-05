@@ -8,15 +8,12 @@ JOIN conversation AS conversation
 SET workflow.user_id = conversation.user_id
 WHERE workflow.user_id IS NULL;
 
-UPDATE workflow_state
-SET user_id = (
-    SELECT id
-    FROM `user`
-    WHERE username = 'roadmind-demo'
-      AND status = 'ACTIVE'
-    LIMIT 1
-)
-WHERE user_id IS NULL;
+UPDATE workflow_state AS workflow
+JOIN `user` AS owner
+    ON owner.username = 'roadmind-demo'
+    AND owner.status = 'ACTIVE'
+SET workflow.user_id = owner.id
+WHERE workflow.user_id IS NULL;
 
 ALTER TABLE workflow_state
     MODIFY COLUMN user_id BIGINT UNSIGNED NOT NULL;
