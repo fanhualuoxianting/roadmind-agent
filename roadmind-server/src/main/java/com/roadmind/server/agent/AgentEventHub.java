@@ -37,6 +37,15 @@ public class AgentEventHub {
         channels.putIfAbsent(taskId, new Channel(taskId));
     }
 
+    public boolean hasChannel(String taskId) {
+        return channels.containsKey(taskId);
+    }
+
+    public void restoreCompleted(AgentTaskSnapshot snapshot) {
+        Channel channel = channels.computeIfAbsent(snapshot.taskId(), Channel::new);
+        channel.restoreCompleted(snapshot);
+    }
+
     public AgentEventEnvelope publish(String taskId, String traceId, String type, Map<String, Object> data) {
         Channel channel = channel(taskId);
         return channel.publish(traceId, type, data);
@@ -58,6 +67,10 @@ public class AgentEventHub {
 
     int channelCount() {
         return channels.size();
+    }
+
+    List<String> eventTypes(String taskId) {
+        return channel(taskId).eventTypes();
     }
 
     private Channel channel(String taskId) {
@@ -105,6 +118,26 @@ public class AgentEventHub {
             return event;
         }
 
+        synchronized void restoreCompleted(AgentTaskSnapshot snapshot) {
+            if (completed || !history.isEmpty()) {
+                return;
+            }
+            String traceId = "recovery-" + taskId;
+            Map<String, Object> response = new LinkedHashMap<>();
+            response.put("status", snapshot.status());
+            response.put("response", snapshot.response() == null ? "任务已结束" : snapshot.response());
+            response.put("degraded", snapshot.degraded());
+            response.put("recovered", true);
+            if (snapshot.plannerMode() != null) {
+                response.put("plannerMode", snapshot.plannerMode());
+            }
+            publish(traceId, "agent.response.ready", response);
+            publish(traceId, "stream.complete", Map.of(
+                    "finalStatus", snapshot.status(),
+                    "recovered", true));
+            complete();
+        }
+
         synchronized SseEmitter subscribe() {
             SseEmitter emitter = new SseEmitter(EMITTER_TIMEOUT_MS);
             for (AgentEventEnvelope event : history) {
@@ -138,6 +171,10 @@ public class AgentEventHub {
 
         synchronized boolean completedAtOrBefore(Instant cutoff) {
             return completedAt != null && !completedAt.isAfter(cutoff);
+        }
+
+        synchronized List<String> eventTypes() {
+            return history.stream().map(AgentEventEnvelope::type).toList();
         }
 
         private boolean send(SseEmitter emitter, AgentEventEnvelope event) {
