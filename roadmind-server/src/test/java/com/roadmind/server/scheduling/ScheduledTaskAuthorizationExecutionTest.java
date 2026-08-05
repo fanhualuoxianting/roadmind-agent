@@ -2,6 +2,8 @@ package com.roadmind.server.scheduling;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.inOrder;
@@ -108,9 +110,9 @@ class ScheduledTaskAuthorizationExecutionTest {
 
         service.pollDueTasks("worker-2", now);
 
-        verify(homeDevices, never()).setLight(anyString(), any(Boolean.class), anyString());
+        verify(homeDevices, never()).setLight(anyString(), anyBoolean(), anyString());
         verify(workflowService, never()).markDeferredActionSucceededAuthorized(
-                anyString(), anyString(), anyString(), any(Integer.class), anyString(), anyString());
+                anyString(), anyString(), anyString(), anyInt(), anyString(), anyString());
         verify(repository).markFailed(
                 eq(task.id()),
                 eq("worker-2"),
