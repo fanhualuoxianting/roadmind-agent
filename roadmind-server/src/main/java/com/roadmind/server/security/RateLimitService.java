@@ -5,11 +5,13 @@ import java.security.MessageDigest;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.HexFormat;
+import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Service;
 
 /** Redis-first fixed-window limiter with a strictly bounded local fallback for dependency outages. */
@@ -17,6 +19,13 @@ import org.springframework.stereotype.Service;
 public class RateLimitService {
 
     private static final int DEFAULT_MAX_LOCAL_WINDOWS = 10_000;
+    private static final DefaultRedisScript<Long> FIXED_WINDOW_SCRIPT = new DefaultRedisScript<>("""
+            local count = redis.call('INCR', KEYS[1])
+            if count == 1 then
+                redis.call('PEXPIRE', KEYS[1], ARGV[1])
+            end
+            return count
+            """, Long.class);
 
     private final ObjectProvider<StringRedisTemplate> redisProvider;
     private final ConcurrentHashMap<String, LocalWindow> localWindows = new ConcurrentHashMap<>();
@@ -44,11 +53,14 @@ public class RateLimitService {
     public boolean tryAcquire(String bucket, String subject, int limit, Duration window) {
         if (limit <= 0) return true;
         String safeKey = "roadmind:rate:" + bucket + ":" + digest(subject == null ? "anonymous" : subject);
+        long windowMillis = Math.max(1L, window.toMillis());
         StringRedisTemplate redis = redisProvider.getIfAvailable();
         if (redis != null) {
             try {
-                Long count = redis.opsForValue().increment(safeKey);
-                if (count != null && count == 1L) redis.expire(safeKey, window);
+                Long count = redis.execute(
+                        FIXED_WINDOW_SCRIPT,
+                        List.of(safeKey),
+                        Long.toString(windowMillis));
                 if (count != null) return count <= limit;
             } catch (RuntimeException ignored) {
                 // Redis is a coordination optimization; fall through to a bounded local guard.
@@ -56,7 +68,6 @@ public class RateLimitService {
         }
 
         long now = clock.millis();
-        long windowMillis = Math.max(1L, window.toMillis());
         synchronized (localWindowLock) {
             LocalWindow existing = localWindows.get(safeKey);
             if (existing != null) {
