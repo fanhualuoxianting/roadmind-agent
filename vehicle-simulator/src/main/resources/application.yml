@@ -1,0 +1,25 @@
+server:
+  port: ${SIMULATOR_PORT:8081}
+  address: ${SIMULATOR_BIND_ADDRESS:127.0.0.1}
+  shutdown: graceful
+
+spring:
+  application:
+    name: vehicle-simulator
+  jackson:
+    deserialization:
+      fail-on-unknown-properties: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      probes:
+        enabled: true
+
+logging:
+  pattern:
+    level: "%5p [traceId:%X{traceId:-none}]"

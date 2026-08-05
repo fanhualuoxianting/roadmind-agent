@@ -1,0 +1,50 @@
+# Java / Maven
+target/
+*.class
+*.log
+.mvn/timing.properties
+
+# Node / Vue
+node_modules/
+dist/
+.vite/
+coverage/
+roadmind-web/src/assets/*-avatar-128.png
+roadmind-web/src/assets/*-avatar-source.png
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+application-local-secret.yml
+**/application-local-secret.yml
+
+# IDEs
+.idea/
+*.iml
+.vscode/
+.project
+.classpath
+.settings/
+
+# Operating systems
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Runtime data
+data/
+logs/
+*.pid
+
+# Test output
+*.hprof
+test-results/
+playwright-report/
+
+# Offline evaluation reports are generated artifacts
+roadmind-evaluation/reports/*.json
+
+# Python cache
+__pycache__/
+*.py[cod]

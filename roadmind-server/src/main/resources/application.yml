@@ -1,0 +1,153 @@
+server:
+  port: ${SERVER_PORT:8080}
+  shutdown: graceful
+  servlet:
+    session:
+      cookie:
+        http-only: true
+        same-site: lax
+
+spring:
+  application:
+    name: roadmind-server
+  ai:
+    model:
+      chat: ${SPRING_AI_MODEL_CHAT:none}
+    openai:
+      api-key: ${OPENAI_API_KEY:disabled}
+      base-url: ${OPENAI_BASE_URL:https://api.openai.com}
+      chat:
+        options:
+          model: ${OPENAI_MODEL:gpt-4o-mini}
+          temperature: 0.1
+          max-tokens: ${OPENAI_MAX_TOKENS:3072}
+          response-format:
+            type: ${OPENAI_RESPONSE_FORMAT:json_object}
+  jackson:
+    deserialization:
+      fail-on-unknown-properties: true
+  datasource:
+    url: jdbc:mysql://${MYSQL_HOST:localhost}:${MYSQL_PORT:3307}/${MYSQL_DATABASE:roadmind}?useUnicode=true&characterEncoding=utf8&connectionTimeZone=UTC
+    username: ${MYSQL_USER:roadmind}
+    password: ${MYSQL_PASSWORD:}
+    hikari:
+      connection-timeout: 3000
+      maximum-pool-size: 5
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6380}
+      password: ${REDIS_PASSWORD:}
+      timeout: 2s
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    validate-migration-naming: true
+  sql:
+    init:
+      mode: never
+
+mybatis-plus:
+  global-config:
+    db-config:
+      id-type: assign_id
+  configuration:
+    map-underscore-to-camel-case: true
+
+roadmind:
+  agent:
+    mode: ${ROADMIND_AGENT_MODE:RULE_STUB}
+    model-name: ${OPENAI_MODEL:gpt-4o-mini}
+    max-tool-calls: 6
+  external:
+    weather-mode: ${WEATHER_MODE:STUB}
+    route-mode: ${ROUTE_MODE:STUB}
+    amap-base-url: ${AMAP_WEB_SERVICE_BASE_URL:https://restapi.amap.com}
+    amap-key: ${AMAP_WEB_SERVICE_KEY:}
+  simulator:
+    base-url: ${VEHICLE_SIMULATOR_BASE_URL:http://localhost:8081}
+    connect-timeout: 1s
+    read-timeout: 2s
+  scheduling:
+    enabled: ${ROADMIND_SCHEDULING_ENABLED:true}
+    poll-interval: ${ROADMIND_SCHEDULING_POLL_INTERVAL:1000ms}
+    initial-delay: ${ROADMIND_SCHEDULING_INITIAL_DELAY:1000ms}
+  internal:
+    token: ${ROADMIND_INTERNAL_TOKEN:disabled}
+  trip:
+    outbox:
+      enabled: ${ROADMIND_TRIP_OUTBOX_ENABLED:true}
+      poll-ms: ${ROADMIND_TRIP_OUTBOX_POLL_MS:500}
+  rate-limit:
+    enabled: ${ROADMIND_RATE_LIMIT_ENABLED:true}
+    window-seconds: ${ROADMIND_RATE_LIMIT_WINDOW_SECONDS:60}
+    user-message-limit: ${ROADMIND_RATE_LIMIT_USER_MESSAGE_LIMIT:30}
+    tool-limit: ${ROADMIND_RATE_LIMIT_TOOL_LIMIT:60}
+    confirmation-limit: ${ROADMIND_RATE_LIMIT_CONFIRMATION_LIMIT:30}
+    sse-limit: ${ROADMIND_RATE_LIMIT_SSE_LIMIT:8}
+  web:
+    allowed-origins:
+      - http://localhost:5173
+      - http://127.0.0.1:5173
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      probes:
+        enabled: true
+
+logging:
+  pattern:
+    level: "%5p [traceId:%X{traceId:-none}]"
+
+resilience4j:
+  retry:
+    instances:
+      routeGateway:
+        max-attempts: 2
+        wait-duration: 100ms
+        enable-exponential-backoff: true
+      weatherGateway:
+        max-attempts: 2
+        wait-duration: 80ms
+        enable-exponential-backoff: true
+  circuitbreaker:
+    instances:
+      routeGateway:
+        sliding-window-size: 10
+        minimum-number-of-calls: 5
+        failure-rate-threshold: 60
+        wait-duration-in-open-state: 10s
+      weatherGateway:
+        sliding-window-size: 10
+        minimum-number-of-calls: 5
+        failure-rate-threshold: 60
+        wait-duration-in-open-state: 10s
+      vehicleSimulator:
+        sliding-window-size: 10
+        minimum-number-of-calls: 5
+        failure-rate-threshold: 60
+        wait-duration-in-open-state: 5s
+      tripSimulator:
+        sliding-window-size: 10
+        minimum-number-of-calls: 5
+        failure-rate-threshold: 60
+        wait-duration-in-open-state: 5s
+  bulkhead:
+    instances:
+      routeGateway:
+        max-concurrent-calls: 4
+        max-wait-duration: 0ms
+      weatherGateway:
+        max-concurrent-calls: 4
+        max-wait-duration: 0ms
+      vehicleSimulator:
+        max-concurrent-calls: 8
+        max-wait-duration: 0ms
+      tripSimulator:
+        max-concurrent-calls: 4
+        max-wait-duration: 0ms

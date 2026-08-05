@@ -1,0 +1,27 @@
+server:
+  port: ${MCP_SERVER_PORT:8090}
+  shutdown: graceful
+
+spring:
+  application:
+    name: roadmind-mcp-server
+  ai:
+    mcp:
+      server:
+        protocol: STATELESS
+        type: SYNC
+        name: roadmind-controlled-tools
+        version: 0.1.0
+        annotation-scanner:
+          enabled: true
+
+roadmind:
+  bridge:
+    server-base-url: ${ROADMIND_SERVER_BASE_URL:http://127.0.0.1:8080}
+    internal-token: ${ROADMIND_MCP_TOKEN:disabled}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
