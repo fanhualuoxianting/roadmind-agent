@@ -35,8 +35,8 @@ class InfrastructureSmokeTest {
                 .load();
 
         assertThat(flyway.migrate().migrationsExecuted)
-                .as("the phase 1 through phase 9 schema must migrate from an empty database")
-                .isEqualTo(9);
+                .as("the phase 1 through phase 10 schema must migrate from an empty database")
+                .isEqualTo(10);
         assertThat(flyway.migrate().migrationsExecuted).isZero();
 
         RedisClient client = RedisClient.create(
