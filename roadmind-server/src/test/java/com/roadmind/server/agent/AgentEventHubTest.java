@@ -8,6 +8,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
+import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -56,6 +57,34 @@ class AgentEventHubTest {
 
         assertThat(hub.channelCount()).isEqualTo(1);
         hub.publish("active-task", "trace-active", "agent.task.updated", Map.of("status", "RUNNING"));
+    }
+
+    @Test
+    void restoresExactlyOneCompletedReplayForTerminalSnapshot() {
+        Instant now = clock.instant();
+        AgentTaskSnapshot snapshot = new AgentTaskSnapshot(
+                "recovered-task",
+                "conversation-1",
+                "恢复任务",
+                "SUCCEEDED",
+                "RULE_STUB",
+                "roadmind-rule-fixture",
+                true,
+                false,
+                "任务已完成",
+                List.of(),
+                0,
+                0,
+                now,
+                now);
+
+        hub.restoreCompleted(snapshot);
+        hub.restoreCompleted(snapshot);
+
+        assertThat(hub.hasChannel(snapshot.taskId())).isTrue();
+        assertThat(hub.eventTypes(snapshot.taskId()))
+                .containsExactly("agent.response.ready", "stream.complete");
+        assertThat(hub.subscribe(snapshot.taskId())).isNotNull();
     }
 
     private static final class MutableClock extends Clock {
