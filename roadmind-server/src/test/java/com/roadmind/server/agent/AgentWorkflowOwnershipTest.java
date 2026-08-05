@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
@@ -22,6 +23,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 class AgentWorkflowOwnershipTest {
 
@@ -138,6 +140,46 @@ class AgentWorkflowOwnershipTest {
         assertThat(recovered.response()).isEqualTo("已从缓存恢复");
         assertThatThrownBy(() -> service.getTask(cached.taskId(), "bob"))
                 .isInstanceOf(AgentResourceNotFoundException.class);
+    }
+
+    @Test
+    void runningTaskRecoveredAfterRestartBecomesTerminalAndRebuildsSseReplay() {
+        Instant now = Instant.parse("2026-08-05T00:00:00Z");
+        AgentTaskSnapshot interrupted = new AgentTaskSnapshot(
+                "199000000000000211",
+                "199000000000000021",
+                "重启前运行中的任务",
+                "RUNNING",
+                "RULE_STUB",
+                "roadmind-rule-fixture",
+                true,
+                false,
+                null,
+                List.of(),
+                0,
+                2,
+                now,
+                now);
+        when(taskPersistence.findByIdForUser(interrupted.taskId(), "alice"))
+                .thenReturn(Optional.of(interrupted));
+        when(eventHub.hasChannel(interrupted.taskId())).thenReturn(false);
+        SseEmitter emitter = mock(SseEmitter.class);
+        when(eventHub.subscribe(interrupted.taskId())).thenReturn(emitter);
+
+        AgentTaskSnapshot recovered = service.getTask(interrupted.taskId(), "alice");
+
+        assertThat(recovered.status()).isEqualTo("AGENT_RESTARTED");
+        assertThat(recovered.response()).contains("服务重启");
+        assertThat(service.events(interrupted.taskId(), "alice")).isSameAs(emitter);
+        verify(taskPersistence).save(argThat(snapshot ->
+                snapshot.taskId().equals(interrupted.taskId())
+                        && snapshot.status().equals("AGENT_RESTARTED")));
+        verify(taskCache).putSnapshot(
+                org.mockito.ArgumentMatchers.eq("alice"),
+                argThat(snapshot -> snapshot.status().equals("AGENT_RESTARTED")));
+        verify(eventHub).restoreCompleted(argThat(snapshot ->
+                snapshot.taskId().equals(interrupted.taskId())
+                        && snapshot.status().equals("AGENT_RESTARTED")));
     }
 
     @Test
