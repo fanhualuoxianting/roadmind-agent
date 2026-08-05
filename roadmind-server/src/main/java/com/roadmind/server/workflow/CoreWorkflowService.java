@@ -37,6 +37,8 @@ public class CoreWorkflowService {
     private static final Pattern ROUTE = Pattern.compile("从([^，。]+?)(?:出发)?去([^，。]+)");
     private static final Pattern DESTINATION = Pattern.compile("去([^，。]+)");
     private static final Pattern TIME = Pattern.compile("(明天(?:早上|上午|下午|晚上)?\\s*\\d{1,2}(?:[:点时]\\d{0,2})?)");
+    private static final String DEMO_USERNAME = "roadmind-demo";
+
     private final Map<String, MutableWorkflow> byConversation = new ConcurrentHashMap<>();
     private final Map<String, MutableWorkflow> byId = new ConcurrentHashMap<>();
     private final Clock clock;
@@ -45,7 +47,9 @@ public class CoreWorkflowService {
     private final VehicleNativeScheduler vehicleScheduler;
     private final HomeDeviceService homeDevices;
 
-    public CoreWorkflowService() { this(Clock.systemUTC(), null, null, null, null); }
+    public CoreWorkflowService() {
+        this(Clock.systemUTC(), null, null, null, null);
+    }
 
     @Autowired
     public CoreWorkflowService(
@@ -56,7 +60,9 @@ public class CoreWorkflowService {
         this(Clock.systemUTC(), persistence, cache, vehicleScheduler.getIfAvailable(), homeDevices);
     }
 
-    CoreWorkflowService(Clock clock) { this(clock, null, null, null, null); }
+    CoreWorkflowService(Clock clock) {
+        this(clock, null, null, null, null);
+    }
 
     CoreWorkflowService(Clock clock, CoreWorkflowPersistence persistence) {
         this(clock, persistence, null, null, null);
@@ -79,17 +85,19 @@ public class CoreWorkflowService {
         this.homeDevices = homeDevices;
     }
 
-    public Snapshot message(String conversationId, String message) {
-        if (message == null || message.isBlank()) throw new IllegalArgumentException("message 不能为空");
+    public Snapshot message(String username, String conversationId, String message) {
+        requireUsername(username);
+        if (conversationId == null || conversationId.isBlank()) {
+            throw new IllegalArgumentException("conversationId 不能为空");
+        }
+        if (message == null || message.isBlank()) {
+            throw new IllegalArgumentException("message 不能为空");
+        }
+        String conversationKey = ownerConversationKey(username, conversationId);
         MutableWorkflow workflow = byConversation.computeIfAbsent(
-                conversationId,
-                id -> persistence == null
-                        ? cachedOrCreate(id)
-                        : persistenceAvailable()
-                                ? persistence.findLatestByConversation(id)
-                                        .map(this::restore)
-                                        .orElseGet(() -> create(id))
-                                : cachedOrCreate(id));
+                conversationKey,
+                ignored -> loadLatestOrCreate(username, conversationId));
+        assertOwner(workflow, username);
         synchronized (workflow) {
             workflow.contextVersion++;
             workflow.prompt = message.strip();
@@ -117,10 +125,25 @@ public class CoreWorkflowService {
         }
     }
 
-    public Snapshot get(String workflowId) { return require(workflowId).snapshot(); }
+    Snapshot message(String conversationId, String message) {
+        return message(DEMO_USERNAME, conversationId, message);
+    }
 
-    public Snapshot decide(String workflowId, String decision, int planVersion, String payloadHash) {
-        MutableWorkflow workflow = require(workflowId);
+    public Snapshot get(String username, String workflowId) {
+        return require(username, workflowId).snapshot();
+    }
+
+    Snapshot get(String workflowId) {
+        return get(DEMO_USERNAME, workflowId);
+    }
+
+    public Snapshot decide(
+            String username,
+            String workflowId,
+            String decision,
+            int planVersion,
+            String payloadHash) {
+        MutableWorkflow workflow = require(username, workflowId);
         synchronized (workflow) {
             Confirmation confirmation = workflow.confirmation;
             if (confirmation == null) throw new IllegalArgumentException("当前任务没有待确认操作");
@@ -129,6 +152,7 @@ public class CoreWorkflowService {
                 workflow.confirmation = withStatus(confirmation, "EXPIRED");
                 workflow.status = "CONFIRMATION_EXPIRED";
                 workflow.timeline.add(event("CONFIRMATION_EXPIRED", "确认已过期", "请重新生成计划"));
+                workflow.updatedAt = clock.instant();
                 return remember(workflow);
             }
             if (planVersion != workflow.planVersion || !confirmation.payloadHash().equals(payloadHash)) {
@@ -151,29 +175,29 @@ public class CoreWorkflowService {
                 workflow.status = "RUNNING";
                 workflow.timeline.add(event("EXECUTION_READY", "确认事务已持久化为 READY", "高风险家居步骤保留原授权，等待延后调度"));
                 executeAndVerify(workflow, true);
-            } else throw new IllegalArgumentException("decision 仅支持 APPROVE、APPROVE_DEFERRED 或 REJECT");
+            } else {
+                throw new IllegalArgumentException("decision 仅支持 APPROVE、APPROVE_DEFERRED 或 REJECT");
+            }
             workflow.updatedAt = clock.instant();
             return remember(workflow);
         }
     }
 
+    Snapshot decide(String workflowId, String decision, int planVersion, String payloadHash) {
+        return decide(DEMO_USERNAME, workflowId, decision, planVersion, payloadHash);
+    }
+
     public DeferredActionAuthorization authorizeDeferredAction(
+            String username,
             String workflowId,
             String stepId,
             String confirmationId,
             int planVersion,
             String payloadHash) {
-        MutableWorkflow workflow = require(workflowId);
+        MutableWorkflow workflow = require(username, workflowId);
         synchronized (workflow) {
-            Confirmation confirmation = workflow.confirmation;
-            if (confirmation == null || !"APPROVED".equals(confirmation.status())) {
-                throw new WorkflowConflictException("高风险动作尚未完成用户确认");
-            }
-            if (!confirmation.confirmationId().equals(confirmationId)
-                    || confirmation.planVersion() != planVersion
-                    || !confirmation.payloadHash().equals(payloadHash)) {
-                throw new WorkflowConflictException("延后动作授权摘要已变化，请重新确认");
-            }
+            Confirmation confirmation = requireApprovedConfirmation(
+                    workflow, confirmationId, planVersion, payloadHash);
             Step step = workflow.steps.stream()
                     .filter(candidate -> candidate.stepId().equals(stepId))
                     .findFirst()
@@ -182,14 +206,42 @@ public class CoreWorkflowService {
                 throw new WorkflowConflictException("该计划步骤不是可延后的已授权高风险动作");
             }
             return new DeferredActionAuthorization(
-                    workflow.id, workflow.conversationId, step.stepId(), step.toolName(),
-                    workflow.planVersion, confirmation.confirmationId(), confirmation.payloadHash(), step.arguments());
+                    workflow.id,
+                    workflow.conversationId,
+                    step.stepId(),
+                    step.toolName(),
+                    workflow.planVersion,
+                    confirmation.confirmationId(),
+                    confirmation.payloadHash(),
+                    step.arguments());
         }
     }
 
-    public Snapshot markDeferredActionSucceeded(String workflowId, String stepId, String taskId) {
-        MutableWorkflow workflow = require(workflowId);
+    DeferredActionAuthorization authorizeDeferredAction(
+            String workflowId,
+            String stepId,
+            String confirmationId,
+            int planVersion,
+            String payloadHash) {
+        return authorizeDeferredAction(
+                DEMO_USERNAME,
+                workflowId,
+                stepId,
+                confirmationId,
+                planVersion,
+                payloadHash);
+    }
+
+    public Snapshot markDeferredActionSucceededAuthorized(
+            String workflowId,
+            String stepId,
+            String confirmationId,
+            int planVersion,
+            String payloadHash,
+            String taskId) {
+        MutableWorkflow workflow = requireInternal(workflowId);
         synchronized (workflow) {
+            requireApprovedConfirmation(workflow, confirmationId, planVersion, payloadHash);
             List<Step> updated = new ArrayList<>();
             boolean changed = false;
             for (Step step : workflow.steps) {
@@ -212,6 +264,23 @@ public class CoreWorkflowService {
             workflow.updatedAt = clock.instant();
             return remember(workflow);
         }
+    }
+
+    private Confirmation requireApprovedConfirmation(
+            MutableWorkflow workflow,
+            String confirmationId,
+            int planVersion,
+            String payloadHash) {
+        Confirmation confirmation = workflow.confirmation;
+        if (confirmation == null || !"APPROVED".equals(confirmation.status())) {
+            throw new WorkflowConflictException("高风险动作尚未完成用户确认");
+        }
+        if (!confirmation.confirmationId().equals(confirmationId)
+                || confirmation.planVersion() != planVersion
+                || !confirmation.payloadHash().equals(payloadHash)) {
+            throw new WorkflowConflictException("延后动作授权摘要已变化，请重新确认");
+        }
+        return confirmation;
     }
 
     private void executeAndVerify(MutableWorkflow workflow, boolean deferHome) {
@@ -238,8 +307,10 @@ public class CoreWorkflowService {
                 } else if ("home.set_light".equals(step.toolName()) && homeDevices != null) {
                     String deviceId = String.valueOf(step.arguments().get("deviceId"));
                     boolean on = Boolean.parseBoolean(String.valueOf(step.arguments().get("on")));
-                    HomeDeviceService devices = homeDevices;
-                    devices.setLight(deviceId, on, workflow.id + "/" + workflow.confirmation.confirmationId());
+                    homeDevices.setLight(
+                            deviceId,
+                            on,
+                            workflow.id + "/" + workflow.confirmation.confirmationId());
                     verification = "家居数字孪生状态回查一致";
                 }
                 if (mismatch && "home.set_light".equals(step.toolName())) {
@@ -252,7 +323,15 @@ public class CoreWorkflowService {
                 hasFailure = true;
                 verification = "执行失败：" + exception.getMessage();
             }
-            done.add(new Step(step.stepId(), step.title(), step.toolName(), step.dependsOn(), step.risk(), status, step.arguments(), verification));
+            done.add(new Step(
+                    step.stepId(),
+                    step.title(),
+                    step.toolName(),
+                    step.dependsOn(),
+                    step.risk(),
+                    status,
+                    step.arguments(),
+                    verification));
             workflow.timeline.add(event("STEP_" + status, step.title(), verification));
         }
         workflow.steps = List.copyOf(done);
@@ -261,7 +340,7 @@ public class CoreWorkflowService {
                 ? "车辆原生预热已预约；家居高风险动作已保留原授权，等待指定延后时间。"
                 : hasFailure
                 ? "计划部分成功：车辆预热已验证，家居灯光回查不一致，已停止依赖步骤并记录审计。"
-                : "执行完成：路线与车辆状态已查询，预热和家居任务已通过数字孪生回查。";
+                : "执行完成：路线与车辆状态已查询，预热和家居任务均已通过数字孪生回查。";
     }
 
     private Instant climateExecuteAt(Object value) {
@@ -281,10 +360,30 @@ public class CoreWorkflowService {
         return value instanceof Number number ? number.doubleValue() : fallback;
     }
 
-    private MutableWorkflow create(String conversationId) {
-        MutableWorkflow workflow = new MutableWorkflow(UUID.randomUUID().toString(), conversationId, clock.instant());
-        byId.put(workflow.id, workflow);
-        return workflow;
+    private MutableWorkflow loadLatestOrCreate(String username, String conversationId) {
+        if (persistence != null) {
+            Optional<Snapshot> persistent = persistence.findLatestByConversationForUser(conversationId, username);
+            if (persistent.isPresent()) {
+                return restore(username, persistent.get());
+            }
+        }
+        if (cache != null) {
+            Optional<Snapshot> cached = cache.findByConversation(username, conversationId);
+            if (cached.isPresent()) {
+                return restore(username, cached.get());
+            }
+        }
+        return create(username, conversationId);
+    }
+
+    private MutableWorkflow create(String username, String conversationId) {
+        MutableWorkflow workflow = new MutableWorkflow(
+                UUID.randomUUID().toString(),
+                username,
+                conversationId,
+                clock.instant());
+        MutableWorkflow existing = byId.putIfAbsent(workflow.id, workflow);
+        return existing == null ? workflow : existing;
     }
 
     private void applySlots(MutableWorkflow w, String message) {
@@ -307,7 +406,9 @@ public class CoreWorkflowService {
 
     private void put(MutableWorkflow w, String name, String value) {
         Slot old = w.slots.get(name);
-        if (old == null || !old.value().equals(value)) w.slots.put(name, new Slot(name, value, "USER_EXPLICIT", w.contextVersion));
+        if (old == null || !old.value().equals(value)) {
+            w.slots.put(name, new Slot(name, value, "USER_EXPLICIT", w.contextVersion));
+        }
     }
 
     private List<String> missing(Map<String, Slot> slots) {
@@ -320,7 +421,9 @@ public class CoreWorkflowService {
 
     private String question(List<String> missing) {
         List<String> labels = missing.stream().map(value -> switch (value) {
-            case "origin" -> "出发地点"; case "destination" -> "目的地"; default -> "出发时间";
+            case "origin" -> "出发地点";
+            case "destination" -> "目的地";
+            default -> "出发时间";
         }).toList();
         return "还需要你补充：" + String.join("、", labels) + "。";
     }
@@ -337,100 +440,198 @@ public class CoreWorkflowService {
                 step("s5", "到达后关闭家中灯光", "home.set_light", List.of("s3"), "HIGH", Map.of("deviceId", "demo-home-light-01", "on", false), "家居设备状态回查一致"));
     }
 
-    private Step step(String id, String title, String tool, List<String> deps, String risk, Map<String,Object> args, String verification) {
-        return new Step(id, title, tool, deps, risk, "PENDING", args, verification);
+    private Step step(
+            String id,
+            String title,
+            String tool,
+            List<String> dependencies,
+            String risk,
+            Map<String, Object> arguments,
+            String verification) {
+        return new Step(id, title, tool, dependencies, risk, "PENDING", arguments, verification);
     }
 
     static void validateDag(List<Step> steps) {
         Map<String, Step> known = new LinkedHashMap<>();
         for (Step step : steps) {
-            if (known.put(step.stepId(), step) != null) throw new IllegalArgumentException("DAG 包含重复步骤");
-            for (String dependency : step.dependsOn()) if (!known.containsKey(dependency)) throw new IllegalArgumentException("DAG 依赖不存在或形成逆向循环");
+            if (known.put(step.stepId(), step) != null) {
+                throw new IllegalArgumentException("DAG 包含重复步骤");
+            }
+            for (String dependency : step.dependsOn()) {
+                if (!known.containsKey(dependency)) {
+                    throw new IllegalArgumentException("DAG 依赖不存在或形成逆向循环");
+                }
+            }
         }
         if (steps.size() > 20) throw new IllegalArgumentException("计划步骤超过上限");
     }
 
     private Confirmation confirmation(MutableWorkflow w) {
-        List<String> items = w.steps.stream().filter(step -> "HIGH".equals(step.risk())).map(Step::stepId).toList();
+        List<String> items = w.steps.stream()
+                .filter(step -> "HIGH".equals(step.risk()))
+                .map(Step::stepId)
+                .toList();
         String payload = w.planVersion + "|" + items + "|" + w.steps.stream().map(Step::arguments).toList();
-        return new Confirmation(UUID.randomUUID().toString(), "PENDING", w.planVersion, sha256(payload), clock.instant().plus(Duration.ofMinutes(10)), items);
+        return new Confirmation(
+                UUID.randomUUID().toString(),
+                "PENDING",
+                w.planVersion,
+                sha256(payload),
+                clock.instant().plus(Duration.ofMinutes(10)),
+                items);
     }
 
-    private Confirmation withStatus(Confirmation c, String status) {
-        return new Confirmation(c.confirmationId(), status, c.planVersion(), c.payloadHash(), c.expiresAt(), c.itemIds());
+    private Confirmation withStatus(Confirmation confirmation, String status) {
+        return new Confirmation(
+                confirmation.confirmationId(),
+                status,
+                confirmation.planVersion(),
+                confirmation.payloadHash(),
+                confirmation.expiresAt(),
+                confirmation.itemIds());
     }
 
     private List<Step> updateWriteSteps(List<Step> steps, String status, String verification) {
-        return steps.stream().map(s -> "HIGH".equals(s.risk())
-                ? new Step(s.stepId(), s.title(), s.toolName(), s.dependsOn(), s.risk(), status, s.arguments(), verification)
-                : s).toList();
+        return steps.stream().map(step -> "HIGH".equals(step.risk())
+                ? new Step(
+                        step.stepId(),
+                        step.title(),
+                        step.toolName(),
+                        step.dependsOn(),
+                        step.risk(),
+                        status,
+                        step.arguments(),
+                        verification)
+                : step).toList();
     }
 
-    private TimelineEvent event(String type, String title, String detail) { return new TimelineEvent(clock.instant(), type, title, detail); }
+    private TimelineEvent event(String type, String title, String detail) {
+        return new TimelineEvent(clock.instant(), type, title, detail);
+    }
 
-    private MutableWorkflow require(String id) {
-        MutableWorkflow workflow = byId.get(id);
-        if (workflow != null) return workflow;
-        if (persistenceAvailable()) {
-            Optional<Snapshot> recovered = persistence.findById(id);
+    private MutableWorkflow require(String username, String workflowId) {
+        requireUsername(username);
+        MutableWorkflow workflow = byId.get(workflowId);
+        if (workflow != null) {
+            assertOwner(workflow, username);
+            return workflow;
+        }
+        if (persistence != null) {
+            Optional<Snapshot> recovered = persistence.findByIdForUser(workflowId, username);
             if (recovered.isPresent()) {
-                MutableWorkflow restored = restore(recovered.get());
-                byConversation.putIfAbsent(restored.conversationId, restored);
+                MutableWorkflow restored = restore(username, recovered.get());
+                byConversation.putIfAbsent(
+                        ownerConversationKey(username, restored.conversationId),
+                        restored);
                 return restored;
             }
         }
-        if (!persistenceAvailable() && cache != null) {
-            Optional<Snapshot> cached = cache.get(id);
+        if (cache != null) {
+            Optional<Snapshot> cached = cache.get(username, workflowId);
             if (cached.isPresent()) {
-                MutableWorkflow restored = restore(cached.get());
-                byConversation.putIfAbsent(restored.conversationId, restored);
+                MutableWorkflow restored = restore(username, cached.get());
+                byConversation.putIfAbsent(
+                        ownerConversationKey(username, restored.conversationId),
+                        restored);
                 return restored;
             }
         }
-        throw new AgentResourceNotFoundException("工作流", id);
+        throw new AgentResourceNotFoundException("工作流", workflowId);
+    }
+
+    private MutableWorkflow requireInternal(String workflowId) {
+        MutableWorkflow workflow = byId.get(workflowId);
+        if (workflow != null) return workflow;
+        if (persistence != null) {
+            Optional<CoreWorkflowPersistence.OwnedSnapshot> recovered = persistence.findOwnedById(workflowId);
+            if (recovered.isPresent()) {
+                CoreWorkflowPersistence.OwnedSnapshot owned = recovered.get();
+                MutableWorkflow restored = restore(owned.username(), owned.snapshot());
+                byConversation.putIfAbsent(
+                        ownerConversationKey(owned.username(), restored.conversationId),
+                        restored);
+                return restored;
+            }
+        }
+        throw new AgentResourceNotFoundException("工作流", workflowId);
     }
 
     private Snapshot remember(MutableWorkflow workflow) {
         Snapshot snapshot = workflow.snapshot();
-        if (persistence != null) persistence.save(snapshot);
-        if (cache != null) cache.put(snapshot);
+        if (persistence != null) persistence.save(workflow.ownerUsername, snapshot);
+        if (cache != null) cache.put(workflow.ownerUsername, snapshot);
         return snapshot;
     }
 
-    private boolean persistenceAvailable() {
-        return persistence != null && persistence.isAvailable();
+    private MutableWorkflow restore(String username, Snapshot snapshot) {
+        MutableWorkflow candidate = MutableWorkflow.from(username, snapshot);
+        MutableWorkflow existing = byId.putIfAbsent(candidate.id, candidate);
+        MutableWorkflow restored = existing == null ? candidate : existing;
+        assertOwner(restored, username);
+        return restored;
     }
 
-    private MutableWorkflow restore(Snapshot snapshot) {
-        MutableWorkflow workflow = MutableWorkflow.from(snapshot);
-        byId.putIfAbsent(workflow.id, workflow);
-        return workflow;
-    }
-
-    private MutableWorkflow cachedOrCreate(String conversationId) {
-        if (cache != null) {
-            Optional<Snapshot> cached = cache.findByConversation(conversationId);
-            if (cached.isPresent()) {
-                return restore(cached.get());
-            }
+    private void assertOwner(MutableWorkflow workflow, String username) {
+        if (!workflow.ownerUsername.equals(username)) {
+            throw new AgentResourceNotFoundException("工作流", workflow.id);
         }
-        return create(conversationId);
     }
 
-    private String sha256(String value) { try { return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8))); } catch (Exception e) { throw new IllegalStateException(e); } }
+    private void requireUsername(String username) {
+        if (username == null || username.isBlank()) {
+            throw new IllegalArgumentException("username 不能为空");
+        }
+    }
+
+    private String ownerConversationKey(String username, String conversationId) {
+        return username + ':' + conversationId;
+    }
+
+    private String sha256(String value) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                    .digest(value.getBytes(StandardCharsets.UTF_8)));
+        } catch (Exception exception) {
+            throw new IllegalStateException(exception);
+        }
+    }
 
     private static final class MutableWorkflow {
-        final String id; final String conversationId; final Map<String, Slot> slots = new LinkedHashMap<>(); final List<TimelineEvent> timeline = new ArrayList<>();
-        int contextVersion; int planVersion; String prompt = ""; String status = "NEW"; List<String> missingSlots = List.of(); List<Step> steps = List.of(); Confirmation confirmation; String response; Instant updatedAt;
-        MutableWorkflow(String id, String conversationId, Instant now) { this.id=id; this.conversationId=conversationId; this.updatedAt=now; }
-        static MutableWorkflow from(Snapshot snapshot) {
+        final String id;
+        final String ownerUsername;
+        final String conversationId;
+        final Map<String, Slot> slots = new LinkedHashMap<>();
+        final List<TimelineEvent> timeline = new ArrayList<>();
+        int contextVersion;
+        int planVersion;
+        String prompt = "";
+        String status = "NEW";
+        List<String> missingSlots = List.of();
+        List<Step> steps = List.of();
+        Confirmation confirmation;
+        String response;
+        Instant updatedAt;
+
+        MutableWorkflow(String id, String ownerUsername, String conversationId, Instant now) {
+            this.id = id;
+            this.ownerUsername = ownerUsername;
+            this.conversationId = conversationId;
+            this.updatedAt = now;
+        }
+
+        static MutableWorkflow from(String ownerUsername, Snapshot snapshot) {
             MutableWorkflow workflow = new MutableWorkflow(
-                    snapshot.workflowId(), snapshot.conversationId(), snapshot.updatedAt());
+                    snapshot.workflowId(),
+                    ownerUsername,
+                    snapshot.conversationId(),
+                    snapshot.updatedAt());
             workflow.contextVersion = snapshot.contextVersion();
             workflow.planVersion = snapshot.planVersion();
             workflow.prompt = snapshot.prompt();
             workflow.status = snapshot.status();
-            workflow.missingSlots = snapshot.missingSlots() == null ? List.of() : List.copyOf(snapshot.missingSlots());
+            workflow.missingSlots = snapshot.missingSlots() == null
+                    ? List.of()
+                    : List.copyOf(snapshot.missingSlots());
             workflow.steps = snapshot.steps() == null ? List.of() : List.copyOf(snapshot.steps());
             workflow.confirmation = snapshot.confirmation();
             workflow.timeline.addAll(snapshot.timeline() == null ? List.of() : snapshot.timeline());
@@ -440,6 +641,22 @@ public class CoreWorkflowService {
             }
             return workflow;
         }
-        synchronized Snapshot snapshot() { return new Snapshot(id, conversationId, status, contextVersion, planVersion, prompt, List.copyOf(slots.values()), missingSlots, steps, confirmation, List.copyOf(timeline), response, updatedAt); }
+
+        synchronized Snapshot snapshot() {
+            return new Snapshot(
+                    id,
+                    conversationId,
+                    status,
+                    contextVersion,
+                    planVersion,
+                    prompt,
+                    List.copyOf(slots.values()),
+                    missingSlots,
+                    steps,
+                    confirmation,
+                    List.copyOf(timeline),
+                    response,
+                    updatedAt);
+        }
     }
 }
