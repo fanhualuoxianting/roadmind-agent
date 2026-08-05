@@ -71,20 +71,22 @@ public class RateLimitService {
         synchronized (localWindowLock) {
             LocalWindow existing = localWindows.get(safeKey);
             if (existing != null) {
-                if (now - existing.startedAt() < windowMillis) {
+                if (now < existing.expiresAtMillis()) {
                     return existing.count().incrementAndGet() <= limit;
                 }
                 localWindows.remove(safeKey, existing);
             }
 
-            evictExpired(now, windowMillis);
+            evictExpired(now);
             if (localWindows.size() >= maxLocalWindows) {
                 // Fail closed instead of allowing a Redis outage plus high-cardinality subjects
                 // to turn the local fallback into an unbounded memory sink.
                 return false;
             }
 
-            localWindows.put(safeKey, new LocalWindow(now, new AtomicInteger(1)));
+            localWindows.put(
+                    safeKey,
+                    new LocalWindow(saturatingAdd(now, windowMillis), new AtomicInteger(1)));
             return true;
         }
     }
@@ -93,8 +95,16 @@ public class RateLimitService {
         return localWindows.size();
     }
 
-    private void evictExpired(long now, long windowMillis) {
-        localWindows.entrySet().removeIf(entry -> now - entry.getValue().startedAt() >= windowMillis);
+    private void evictExpired(long now) {
+        localWindows.entrySet().removeIf(entry -> now >= entry.getValue().expiresAtMillis());
+    }
+
+    private long saturatingAdd(long left, long right) {
+        try {
+            return Math.addExact(left, right);
+        } catch (ArithmeticException ignored) {
+            return Long.MAX_VALUE;
+        }
     }
 
     private String digest(String value) {
@@ -106,6 +116,6 @@ public class RateLimitService {
         }
     }
 
-    private record LocalWindow(long startedAt, AtomicInteger count) {
+    private record LocalWindow(long expiresAtMillis, AtomicInteger count) {
     }
 }
