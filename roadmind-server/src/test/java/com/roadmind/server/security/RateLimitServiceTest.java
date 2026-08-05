@@ -52,6 +52,21 @@ class RateLimitServiceTest {
         assertThat(service.localWindowCount()).isEqualTo(1);
     }
 
+    @Test
+    void shortWindowTrafficCannotExpireAnIndependentLongWindow() {
+        MutableClock clock = new MutableClock(Instant.parse("2026-08-05T00:00:00Z"));
+        RateLimitService service = new RateLimitService(provider, clock, 10);
+
+        assertThat(service.tryAcquire("confirmations", "alice", 1, Duration.ofMinutes(5))).isTrue();
+        clock.advance(Duration.ofSeconds(2));
+
+        assertThat(service.tryAcquire("sse", "bob", 1, Duration.ofSeconds(1))).isTrue();
+        assertThat(service.tryAcquire("confirmations", "alice", 1, Duration.ofMinutes(5))).isFalse();
+
+        clock.advance(Duration.ofMinutes(5));
+        assertThat(service.tryAcquire("confirmations", "alice", 1, Duration.ofMinutes(5))).isTrue();
+    }
+
     private static final class MutableClock extends Clock {
         private Instant instant;
 
