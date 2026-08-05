@@ -1,0 +1,53 @@
+name: roadmind-ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Backend tests
+        run: ./mvnw -B test
+
+      - name: Set up Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: roadmind-web/package-lock.json
+
+      - name: Frontend checks
+        working-directory: roadmind-web
+        run: |
+          npm ci
+          npm run type-check
+          npm run test -- --run
+          npm run build
+
+      - name: Offline evaluation
+        run: |
+          python3 roadmind-evaluation/run_evaluation.py --output /tmp/roadmind-evaluation.json
+          python3 -m unittest discover -s roadmind-evaluation -p 'test_*.py'
+
+      - name: Secret scan
+        shell: bash
+        run: |
+          if git grep -n -I -E 'sk-[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN (RSA |EC )?PRIVATE KEY-----'; then
+            echo 'Potential secret detected in tracked files.'
+            exit 1
+          fi
