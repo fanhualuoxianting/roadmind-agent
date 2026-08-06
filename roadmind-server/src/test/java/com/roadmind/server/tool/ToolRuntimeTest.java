@@ -44,7 +44,7 @@ class ToolRuntimeTest {
     }
 
     @Test
-    void validatesStrictInputBeforeExecution() throws Exception {
+    void modelGeneratedArgumentsCannotBypassStrictSchemaOrBeanValidation() throws Exception {
         runtime = createRuntime(List.of(new TestTool(
                 "demo.read", RetryPolicy.none(), Duration.ofSeconds(1), input -> input.value())));
 

@@ -1,6 +1,7 @@
 package com.roadmind.server.agent;
 
 import com.roadmind.server.tool.ToolDescriptor;
+import com.roadmind.server.tool.ToolRiskLevel;
 import com.roadmind.server.tool.ToolRuntime;
 import com.roadmind.server.tool.UnknownToolException;
 import java.io.IOException;
@@ -75,7 +76,13 @@ public class AgentPlannerRouter {
             throw new InvalidModelOutputException("模型请求的工具数量超过限制", null);
         }
         try {
-            plan.toolCalls().forEach(call -> toolRuntime.descriptor(call.toolName()));
+            plan.toolCalls().forEach(call -> {
+                ToolDescriptor descriptor = toolRuntime.descriptor(call.toolName());
+                if (descriptor.riskLevel() != ToolRiskLevel.READ_ONLY) {
+                    throw new InvalidModelOutputException(
+                            "模型只能提出只读工具；高风险动作必须通过 Policy Gate 和用户确认", null);
+                }
+            });
         } catch (UnknownToolException exception) {
             throw new InvalidModelOutputException("模型返回了未注册工具", exception);
         }
