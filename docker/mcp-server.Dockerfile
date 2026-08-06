@@ -2,7 +2,8 @@ FROM maven:3.9.9-eclipse-temurin-21 AS build
 
 WORKDIR /workspace
 COPY . .
-RUN ./mvnw -B -ntp -pl roadmind-mcp-server -am -DskipTests package
+RUN unset MAVEN_CONFIG \
+    && ./mvnw -B -ntp clean package -DskipTests
 
 FROM eclipse-temurin:21-jre-jammy
 

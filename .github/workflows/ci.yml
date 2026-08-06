@@ -142,6 +142,26 @@ jobs:
           ROADMIND_SMOKE_PROJECT: roadmind-ci-${{ github.run_id }}
         run: bash scripts/smoke/docker-smoke.sh
 
+      - name: Collect Docker diagnostics
+        if: always()
+        env:
+          ROADMIND_SMOKE_PROJECT: roadmind-ci-${{ github.run_id }}
+          ROADMIND_NETWORK_NAME: roadmind-ci-${{ github.run_id }}-network
+          ROADMIND_MYSQL_VOLUME_NAME: roadmind-ci-${{ github.run_id }}-mysql-data
+          ROADMIND_REDIS_VOLUME_NAME: roadmind-ci-${{ github.run_id }}-redis-data
+        run: |
+          echo "=== Docker Compose status ==="
+          docker compose --env-file .env.example --profile full -p "$ROADMIND_SMOKE_PROJECT" ps -a || true
+
+          echo "=== Docker Compose logs ==="
+          docker compose --env-file .env.example --profile full -p "$ROADMIND_SMOKE_PROJECT" logs --no-color --tail=500 || true
+
+          echo "=== Docker containers ==="
+          docker ps -a || true
+
+          echo "=== Docker images ==="
+          docker images || true
+
       - name: Tear down smoke project
         if: always()
         env:
@@ -149,7 +169,7 @@ jobs:
           ROADMIND_NETWORK_NAME: roadmind-ci-${{ github.run_id }}-network
           ROADMIND_MYSQL_VOLUME_NAME: roadmind-ci-${{ github.run_id }}-mysql-data
           ROADMIND_REDIS_VOLUME_NAME: roadmind-ci-${{ github.run_id }}-redis-data
-        run: docker compose --env-file .env.example --profile full -p "$ROADMIND_SMOKE_PROJECT" down
+        run: docker compose --env-file .env.example --profile full -p "$ROADMIND_SMOKE_PROJECT" down --volumes --remove-orphans
 
   repository-hygiene:
     name: Repository hygiene
