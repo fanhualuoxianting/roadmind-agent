@@ -50,6 +50,7 @@ services:
       dockerfile: docker/vehicle-simulator.Dockerfile
     environment:
       SERVER_PORT: 8081
+      SIMULATOR_BIND_ADDRESS: 0.0.0.0
     ports:
       - "127.0.0.1:${SIMULATOR_PORT:-8081}:8081"
     networks:
