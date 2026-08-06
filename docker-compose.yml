@@ -43,13 +43,97 @@ services:
       start_period: 10s
     restart: unless-stopped
 
+  vehicle-simulator:
+    profiles: ["full"]
+    build:
+      context: .
+      dockerfile: docker/vehicle-simulator.Dockerfile
+    environment:
+      SERVER_PORT: 8081
+    ports:
+      - "127.0.0.1:${SIMULATOR_PORT:-8081}:8081"
+    networks:
+      - roadmind-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail --silent http://127.0.0.1:8081/actuator/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  roadmind-server:
+    profiles: ["full"]
+    build:
+      context: .
+      dockerfile: docker/server.Dockerfile
+    environment:
+      SPRING_PROFILES_ACTIVE: demo
+      SERVER_PORT: 8080
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-roadmind}
+      MYSQL_USER: ${MYSQL_USER:-roadmind}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      VEHICLE_SIMULATOR_BASE_URL: http://vehicle-simulator:8081
+      ROADMIND_AGENT_MODE: ${ROADMIND_AGENT_MODE:-RULE_STUB}
+      SPRING_AI_MODEL_CHAT: ${SPRING_AI_MODEL_CHAT:-none}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+      WEATHER_MODE: ${WEATHER_MODE:-STUB}
+      ROUTE_MODE: ${ROUTE_MODE:-STUB}
+      ROADMIND_INTERNAL_TOKEN: ${ROADMIND_INTERNAL_TOKEN:-disabled}
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      vehicle-simulator:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${SERVER_PORT:-8080}:8080"
+    networks:
+      - roadmind-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail --silent http://127.0.0.1:8080/actuator/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 45s
+
+  roadmind-mcp-server:
+    profiles: ["full"]
+    build:
+      context: .
+      dockerfile: docker/mcp-server.Dockerfile
+    environment:
+      MCP_SERVER_PORT: 8090
+      ROADMIND_SERVER_BASE_URL: http://roadmind-server:8080
+      ROADMIND_MCP_TOKEN: ${ROADMIND_MCP_TOKEN:-disabled}
+    depends_on:
+      roadmind-server:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${MCP_SERVER_PORT:-8090}:8090"
+    networks:
+      - roadmind-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail --silent http://127.0.0.1:8090/actuator/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
 networks:
   roadmind-network:
-    name: roadmind-agent-network
+    name: ${ROADMIND_NETWORK_NAME:-roadmind-agent-network}
     driver: bridge
 
 volumes:
   roadmind-mysql-data:
-    name: roadmind-agent-mysql-data
+    name: ${ROADMIND_MYSQL_VOLUME_NAME:-roadmind-agent-mysql-data}
   roadmind-redis-data:
-    name: roadmind-agent-redis-data
+    name: ${ROADMIND_REDIS_VOLUME_NAME:-roadmind-agent-redis-data}

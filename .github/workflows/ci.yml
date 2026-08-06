@@ -64,9 +64,12 @@ jobs:
       - name: Set up Node 24
         uses: actions/setup-node@v4
         with:
-          node-version: '24'
+          node-version-file: roadmind-web/.node-version
           cache: npm
           cache-dependency-path: roadmind-web/package-lock.json
+
+      - name: Pin npm 12
+        run: npm install --global npm@12.0.2
 
       - name: Install dependencies
         working-directory: roadmind-web
@@ -111,6 +114,42 @@ jobs:
           name: roadmind-evaluation-report
           path: ${{ runner.temp }}/roadmind-evaluation.json
           if-no-files-found: error
+
+  docker-smoke:
+    name: Docker HTTP SSE MCP smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Run full-stack Docker smoke
+        env:
+          ROADMIND_SMOKE_PROJECT: roadmind-ci-${{ github.run_id }}
+        run: bash scripts/smoke/docker-smoke.sh
+
+      - name: Tear down smoke project
+        if: always()
+        env:
+          ROADMIND_SMOKE_PROJECT: roadmind-ci-${{ github.run_id }}
+          ROADMIND_NETWORK_NAME: roadmind-ci-${{ github.run_id }}-network
+          ROADMIND_MYSQL_VOLUME_NAME: roadmind-ci-${{ github.run_id }}-mysql-data
+          ROADMIND_REDIS_VOLUME_NAME: roadmind-ci-${{ github.run_id }}-redis-data
+        run: docker compose --env-file .env.example --profile full -p "$ROADMIND_SMOKE_PROJECT" down
 
   repository-hygiene:
     name: Repository hygiene

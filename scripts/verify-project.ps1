@@ -7,8 +7,8 @@ $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $projectRoot
 
-Write-Host '== RoadMind backend tests ==' -ForegroundColor Cyan
-& .\mvnw.cmd -B test
+Write-Host '== RoadMind backend verification ==' -ForegroundColor Cyan
+& .\mvnw.cmd -B -ntp clean verify
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 if (-not $SkipFrontend) {
@@ -35,8 +35,8 @@ python -m unittest discover -s .\roadmind-evaluation -p 'test_*.py'
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 if (-not $SkipDocker) {
-    Write-Host '== Docker health ==' -ForegroundColor Cyan
-    docker compose config | Out-Null
+    Write-Host '== Docker Compose full configuration ==' -ForegroundColor Cyan
+    docker compose --env-file .env.example --profile full config | Out-Null
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 

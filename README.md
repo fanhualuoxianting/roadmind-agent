@@ -101,7 +101,7 @@ roadmind-agent/
 
 - JDK 21
 - Docker Desktop / Docker Compose v2
-- Node.js 24 与 npm 11
+- Node.js 24.18.1 与 npm 12.0.2（版本见 `roadmind-web/.node-version`）
 - Git
 
 Maven 使用仓库内 Wrapper，不要求全局安装 Maven。
@@ -208,7 +208,7 @@ python roadmind-evaluation/run_evaluation.py --output roadmind-evaluation/report
 python -m unittest discover -s roadmind-evaluation -p 'test_*.py'
 ```
 
-当前 CI 基线覆盖 111 个后端测试、前端测试与生产构建、30 条离线 Agent 评测、Compose 配置检查和敏感信息扫描。生成的评测报告位于被 Git 忽略的 `roadmind-evaluation/reports/`。
+当前测试数量、跳过项、运行环境和 Smoke 状态以 [当前验证报告](docs/current-verification.md) 为准。CI 同时执行后端、前端、离线评测、完整 Docker/HTTP/SSE/MCP Smoke、Compose 配置检查和敏感信息扫描。生成的评测报告位于被 Git 忽略的 `roadmind-evaluation/reports/`。
 
 ## 设计边界
 
@@ -222,6 +222,8 @@ python -m unittest discover -s roadmind-evaluation -p 'test_*.py'
 
 - [当前系统架构](docs/architecture.md)
 - [MCP 集成说明](docs/mcp-integration.md)
+- [当前验证报告](docs/current-verification.md)
+- [Smoke 脚本说明](scripts/smoke/README.md)
 - [离线评测说明](roadmind-evaluation/README.md)
 - [安全问题报告策略](SECURITY.md)
 
