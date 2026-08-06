@@ -12,7 +12,7 @@ import org.springframework.stereotype.Component;
 @Component
 public class AgentTaskCache {
 
-    private static final int SCHEMA_VERSION = 1;
+    private static final int SCHEMA_VERSION = 2;
     private static final Duration TTL = Duration.ofHours(24);
 
     private final ObjectProvider<StringRedisTemplate> redisTemplateProvider;
@@ -25,33 +25,37 @@ public class AgentTaskCache {
         this.objectMapper = objectMapper;
     }
 
-    public void putSnapshot(AgentTaskSnapshot snapshot) {
+    public void putSnapshot(String userId, AgentTaskSnapshot snapshot) {
         StringRedisTemplate redis = redisTemplateProvider.getIfAvailable();
-        if (redis == null) {
+        if (redis == null || userId == null || userId.isBlank()) {
             return;
         }
         try {
             redis.opsForValue().set(
-                    snapshotKey(snapshot.taskId()),
-                    objectMapper.writeValueAsString(new SnapshotValue(SCHEMA_VERSION, snapshot)),
+                    snapshotKey(userId, snapshot.taskId()),
+                    objectMapper.writeValueAsString(new SnapshotValue(
+                            SCHEMA_VERSION,
+                            userId,
+                            snapshot)),
                     TTL);
         } catch (JsonProcessingException | RuntimeException ignored) {
             // Redis is only a recovery optimization; MySQL remains authoritative.
         }
     }
 
-    public Optional<AgentTaskSnapshot> getSnapshot(String taskId) {
+    public Optional<AgentTaskSnapshot> getSnapshot(String userId, String taskId) {
         StringRedisTemplate redis = redisTemplateProvider.getIfAvailable();
-        if (redis == null) {
+        if (redis == null || userId == null || userId.isBlank()) {
             return Optional.empty();
         }
         try {
-            String value = redis.opsForValue().get(snapshotKey(taskId));
+            String value = redis.opsForValue().get(snapshotKey(userId, taskId));
             if (value == null || value.isBlank()) {
                 return Optional.empty();
             }
             SnapshotValue cached = objectMapper.readValue(value, SnapshotValue.class);
             if (cached.schemaVersion() != SCHEMA_VERSION
+                    || !userId.equals(cached.userId())
                     || cached.snapshot() == null
                     || !taskId.equals(cached.snapshot().taskId())) {
                 return Optional.empty();
@@ -69,14 +73,20 @@ public class AgentTaskCache {
             String requestHash,
             String taskId) {
         StringRedisTemplate redis = redisTemplateProvider.getIfAvailable();
-        if (redis == null) {
+        if (redis == null
+                || userId == null || userId.isBlank()
+                || conversationId == null || conversationId.isBlank()) {
             return;
         }
         try {
             redis.opsForValue().set(
                     idempotencyKey(userId, conversationId, idempotencyKey),
                     objectMapper.writeValueAsString(new ReplayValue(
-                            SCHEMA_VERSION, requestHash, taskId)),
+                            SCHEMA_VERSION,
+                            userId,
+                            conversationId,
+                            requestHash,
+                            taskId)),
                     TTL);
         } catch (JsonProcessingException | RuntimeException ignored) {
             // A cache failure must never fail an already durable task write.
@@ -88,7 +98,9 @@ public class AgentTaskCache {
             String conversationId,
             String idempotencyKey) {
         StringRedisTemplate redis = redisTemplateProvider.getIfAvailable();
-        if (redis == null) {
+        if (redis == null
+                || userId == null || userId.isBlank()
+                || conversationId == null || conversationId.isBlank()) {
             return Optional.empty();
         }
         try {
@@ -98,28 +110,35 @@ public class AgentTaskCache {
             }
             ReplayValue cached = objectMapper.readValue(value, ReplayValue.class);
             if (cached.schemaVersion() != SCHEMA_VERSION
+                    || !userId.equals(cached.userId())
+                    || !conversationId.equals(cached.conversationId())
                     || cached.requestHash() == null
                     || cached.taskId() == null) {
                 return Optional.empty();
             }
-            return getSnapshot(cached.taskId())
+            return getSnapshot(userId, cached.taskId())
                     .map(snapshot -> new AgentTaskReplay(cached.requestHash(), snapshot));
         } catch (JsonProcessingException | RuntimeException ignored) {
             return Optional.empty();
         }
     }
 
-    private String snapshotKey(String taskId) {
-        return "roadmind:agent-task:" + taskId + ":snapshot";
+    private String snapshotKey(String userId, String taskId) {
+        return "roadmind:agent-task:" + userId + ':' + taskId + ":snapshot";
     }
 
     private String idempotencyKey(String userId, String conversationId, String idempotencyKey) {
         return "roadmind:idempotency:agent-task:" + userId + ':' + conversationId + ':' + idempotencyKey;
     }
 
-    private record SnapshotValue(int schemaVersion, AgentTaskSnapshot snapshot) {
+    private record SnapshotValue(int schemaVersion, String userId, AgentTaskSnapshot snapshot) {
     }
 
-    private record ReplayValue(int schemaVersion, String requestHash, String taskId) {
+    private record ReplayValue(
+            int schemaVersion,
+            String userId,
+            String conversationId,
+            String requestHash,
+            String taskId) {
     }
 }

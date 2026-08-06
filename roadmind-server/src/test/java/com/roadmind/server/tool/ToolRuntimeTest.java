@@ -10,7 +10,10 @@ import jakarta.validation.constraints.NotBlank;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.List;
+import java.util.concurrent.AbstractExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -41,7 +44,7 @@ class ToolRuntimeTest {
     }
 
     @Test
-    void validatesStrictInputBeforeExecution() throws Exception {
+    void modelGeneratedArgumentsCannotBypassStrictSchemaOrBeanValidation() throws Exception {
         runtime = createRuntime(List.of(new TestTool(
                 "demo.read", RetryPolicy.none(), Duration.ofSeconds(1), input -> input.value())));
 
@@ -128,6 +131,28 @@ class ToolRuntimeTest {
         assertThat(result.retryable()).isTrue();
     }
 
+    @Test
+    void mapsSaturatedExecutorToStableToolBusyResult() throws Exception {
+        runtime = new ToolRuntime(
+                List.of(new TestTool(
+                        "demo.read",
+                        RetryPolicy.retryOnce(Duration.ZERO),
+                        Duration.ofSeconds(1),
+                        Input::value)),
+                mapper(),
+                Validation.buildDefaultValidatorFactory().getValidator(),
+                Clock.systemUTC(),
+                new RejectingExecutorService());
+
+        ToolExecutionResult result = runtime.execute(
+                "demo.read", mapper().readTree("{\"value\":\"queued\"}"), context());
+
+        assertThat(result.success()).isFalse();
+        assertThat(result.errorCode()).isEqualTo("TOOL_BUSY");
+        assertThat(result.retryable()).isFalse();
+        assertThat(result.attempts()).isEqualTo(1);
+    }
+
     private ToolRuntime createRuntime(List<RoadMindTool<?, ?>> tools) {
         return new ToolRuntime(
                 tools,
@@ -192,6 +217,41 @@ class ToolRuntimeTest {
             } catch (Exception exception) {
                 throw new RuntimeException(exception);
             }
+        }
+    }
+
+    private static final class RejectingExecutorService extends AbstractExecutorService {
+        private boolean shutdown;
+
+        @Override
+        public void shutdown() {
+            shutdown = true;
+        }
+
+        @Override
+        public List<Runnable> shutdownNow() {
+            shutdown = true;
+            return List.of();
+        }
+
+        @Override
+        public boolean isShutdown() {
+            return shutdown;
+        }
+
+        @Override
+        public boolean isTerminated() {
+            return shutdown;
+        }
+
+        @Override
+        public boolean awaitTermination(long timeout, TimeUnit unit) {
+            return shutdown;
+        }
+
+        @Override
+        public void execute(Runnable command) {
+            throw new RejectedExecutionException("queue full");
         }
     }
 }

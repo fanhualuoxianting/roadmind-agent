@@ -34,7 +34,7 @@ const statusLabel = computed(() => ({ WAITING_INPUT: '等待补充', WAITING_CON
         <template v-if="activeStep"><header><small>STEP {{ selected + 1 }}</small><h2>{{ activeStep.title }}</h2></header><dl><dt>工具</dt><dd>{{ activeStep.toolName }}</dd><dt>服务端风险</dt><dd :class="{ coral: activeStep.risk === 'HIGH' }">{{ activeStep.risk }}</dd><dt>状态</dt><dd>{{ activeStep.status }}</dd><dt>回查策略</dt><dd>{{ activeStep.verification }}</dd></dl><pre>{{ JSON.stringify(activeStep.arguments, null, 2) }}</pre></template>
         <template v-else><header><small>POLICY GATE</small><h2>步骤详情</h2></header><p class="detail-placeholder">选择计划步骤后，在这里查看参数、依赖、风险与验证方式。</p></template>
         <div v-if="snapshot?.confirmation?.status === 'PENDING'" class="confirmation-panel"><strong>需要你的确认</strong><p>将执行车辆预热与家居灯光操作，仅作用于数字孪生模拟环境。</p><small>确认与 V{{ snapshot.planVersion }} 及操作摘要绑定，10 分钟内有效。</small><div><button class="reject" @click="store.decide('REJECT')">拒绝执行</button><button class="approve" @click="store.decide('APPROVE')">确认并继续</button></div></div>
-        <div class="audit-mini" v-if="snapshot?.timeline.length"><strong>执行时间线</strong><article v-for="event in snapshot.timeline.slice(-5)" :key="event.occurredAt + event.type"><i></i><div><b>{{ event.title }}</b><small>{{ event.detail }}</small></div></article></div>
+        <div class="audit-mini" v-if="snapshot?.timeline.length"><strong>执行时间线</strong><article v-for="(event, index) in snapshot.timeline.slice(-5)" :key="`${event.occurredAt}-${event.type}-${index}`"><i></i><div><b>{{ event.title }}</b><small>{{ event.detail }}</small></div></article></div>
       </aside>
     </div>
     <p v-if="store.error" class="agent-error">{{ store.error }}</p>

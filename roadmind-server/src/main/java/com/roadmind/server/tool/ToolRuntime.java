@@ -13,12 +13,15 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
@@ -26,6 +29,8 @@ import org.springframework.stereotype.Component;
 public class ToolRuntime {
 
     private static final int MAX_ARGUMENT_BYTES = 16 * 1024;
+    private static final int TOOL_THREADS = 4;
+    private static final int TOOL_QUEUE_CAPACITY = 64;
 
     private final Map<String, RoadMindTool<?, ?>> tools;
     private final ObjectMapper objectMapper;
@@ -35,11 +40,7 @@ public class ToolRuntime {
 
     @Autowired
     public ToolRuntime(List<RoadMindTool<?, ?>> discoveredTools, ObjectMapper objectMapper, Validator validator) {
-        this(discoveredTools, objectMapper, validator, Clock.systemUTC(), Executors.newFixedThreadPool(4, runnable -> {
-            Thread thread = new Thread(runnable, "roadmind-tool-runtime");
-            thread.setDaemon(true);
-            return thread;
-        }));
+        this(discoveredTools, objectMapper, validator, Clock.systemUTC(), createExecutor());
     }
 
     ToolRuntime(
@@ -167,7 +168,16 @@ public class ToolRuntime {
             Object input,
             ToolExecutionContext context,
             ToolDescriptor descriptor) {
-        Future<Object> future = executor.submit(() -> invoke(tool, input, context));
+        Future<Object> future;
+        try {
+            future = executor.submit(() -> invoke(tool, input, context));
+        } catch (RejectedExecutionException exception) {
+            throw new ToolDependencyException(
+                    "TOOL_BUSY",
+                    descriptor.name() + " 执行队列已满",
+                    false,
+                    exception);
+        }
         try {
             return future.get(descriptor.timeout().toMillis(), TimeUnit.MILLISECONDS);
         } catch (TimeoutException exception) {
@@ -199,6 +209,24 @@ public class ToolRuntime {
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
         }
+    }
+
+    private static ExecutorService createExecutor() {
+        AtomicInteger threadSequence = new AtomicInteger();
+        return new ThreadPoolExecutor(
+                TOOL_THREADS,
+                TOOL_THREADS,
+                0L,
+                TimeUnit.MILLISECONDS,
+                new ArrayBlockingQueue<>(TOOL_QUEUE_CAPACITY),
+                runnable -> {
+                    Thread thread = new Thread(
+                            runnable,
+                            "roadmind-tool-runtime-" + threadSequence.incrementAndGet());
+                    thread.setDaemon(true);
+                    return thread;
+                },
+                new ThreadPoolExecutor.AbortPolicy());
     }
 
     @PreDestroy

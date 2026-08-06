@@ -9,7 +9,7 @@ import type {
   WorkflowSnapshot,
 } from '@/types/agent'
 import type { SimulationSpeed, TripEvent, TripSnapshot } from '@/types/trip'
-import type { Preference, ScheduledTask } from '@/types/phase5'
+import type { Preference, ScheduledTask } from '@/types/automation'
 
 export const http = axios.create({
   baseURL: '/api',

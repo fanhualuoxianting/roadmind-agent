@@ -48,7 +48,7 @@ public class GlobalExceptionHandler {
     }
 
     @ExceptionHandler({PreferenceNotFoundException.class, ScheduledTaskNotFoundException.class})
-    ResponseEntity<ApiErrorResponse> phaseFiveNotFound(RuntimeException exception) {
+    ResponseEntity<ApiErrorResponse> automationResourceNotFound(RuntimeException exception) {
         return error(HttpStatus.NOT_FOUND, "RESOURCE_NOT_FOUND", exception.getMessage(), Map.of());
     }
 

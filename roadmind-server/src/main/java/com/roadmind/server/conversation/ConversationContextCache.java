@@ -3,9 +3,12 @@ package com.roadmind.server.conversation;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Optional;
 import org.springframework.beans.factory.ObjectProvider;
@@ -13,12 +16,12 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
 /**
- * Best-effort Redis cache. A cache outage never replaces the MySQL source of truth.
+ * Best-effort user-scoped Redis cache. A cache outage never replaces the MySQL source of truth.
  */
 @Component
 public class ConversationContextCache {
 
-    private static final int SCHEMA_VERSION = 1;
+    private static final int SCHEMA_VERSION = 2;
     private static final Duration TTL = Duration.ofHours(24);
 
     private final ObjectProvider<StringRedisTemplate> redisTemplateProvider;
@@ -31,14 +34,14 @@ public class ConversationContextCache {
         this.objectMapper = objectMapper;
     }
 
-    public void put(ConversationContextSnapshot snapshot) {
+    public void put(String username, ConversationContextSnapshot snapshot) {
         StringRedisTemplate redis = redisTemplateProvider.getIfAvailable();
-        if (redis == null) {
+        if (redis == null || username == null || username.isBlank() || snapshot == null) {
             return;
         }
         try {
-            redis.opsForValue().set(contextKey(snapshot.conversationId()), encode(snapshot), TTL);
-            String messagesKey = messagesKey(snapshot.conversationId());
+            redis.opsForValue().set(contextKey(username, snapshot.conversationId()), encode(username, snapshot), TTL);
+            String messagesKey = messagesKey(username, snapshot.conversationId());
             redis.delete(messagesKey);
             if (!snapshot.recentMessages().isEmpty()) {
                 redis.opsForList().rightPushAll(messagesKey, snapshot.recentMessages());
@@ -49,18 +52,21 @@ public class ConversationContextCache {
         }
     }
 
-    public Optional<ConversationContextSnapshot> get(String conversationId) {
+    public Optional<ConversationContextSnapshot> get(String username, String conversationId) {
         StringRedisTemplate redis = redisTemplateProvider.getIfAvailable();
-        if (redis == null) {
+        if (redis == null
+                || username == null || username.isBlank()
+                || conversationId == null || conversationId.isBlank()) {
             return Optional.empty();
         }
         try {
-            String value = redis.opsForValue().get(contextKey(conversationId));
+            String value = redis.opsForValue().get(contextKey(username, conversationId));
             if (value == null || value.isBlank()) {
                 return Optional.empty();
             }
             JsonNode json = objectMapper.readTree(value);
             if (json.path("schemaVersion").asInt() != SCHEMA_VERSION
+                    || !username.equals(json.path("username").asText())
                     || !conversationId.equals(json.path("conversationId").asText())) {
                 return Optional.empty();
             }
@@ -78,7 +84,7 @@ public class ConversationContextCache {
                     messages.add(node.asText());
                 }
             }
-            List<String> listMessages = redis.opsForList().range(messagesKey(conversationId), 0, -1);
+            List<String> listMessages = redis.opsForList().range(messagesKey(username, conversationId), 0, -1);
             if (listMessages != null && !listMessages.isEmpty()) {
                 messages = List.copyOf(listMessages);
             }
@@ -97,38 +103,49 @@ public class ConversationContextCache {
         }
     }
 
-    private String encode(ConversationContextSnapshot snapshot) throws JsonProcessingException {
+    private String encode(String username, ConversationContextSnapshot snapshot) throws JsonProcessingException {
         return objectMapper.writeValueAsString(new CacheValue(
                 SCHEMA_VERSION,
+                username,
                 snapshot.userId(),
                 snapshot.conversationId(),
                 snapshot.title(),
                 snapshot.status(),
                 snapshot.timezone(),
-                snapshot.createdAt(),
+                snapshot.createdAt().toString(),
                 snapshot.contextVersion(),
                 snapshot.recentMessages(),
-                snapshot.expiresAt()));
+                snapshot.expiresAt() == null ? null : snapshot.expiresAt().toString()));
     }
 
-    private String contextKey(String conversationId) {
-        return "roadmind:session:" + conversationId + ":context";
+    private String contextKey(String username, String conversationId) {
+        return "roadmind:session:" + digest(username) + ':' + conversationId + ":context";
     }
 
-    private String messagesKey(String conversationId) {
-        return "roadmind:session:" + conversationId + ":recent-messages";
+    private String messagesKey(String username, String conversationId) {
+        return "roadmind:session:" + digest(username) + ':' + conversationId + ":recent-messages";
+    }
+
+    private String digest(String value) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                    .digest(value.getBytes(StandardCharsets.UTF_8)));
+        } catch (Exception exception) {
+            return Integer.toHexString(value.hashCode());
+        }
     }
 
     private record CacheValue(
             int schemaVersion,
+            String username,
             long userId,
             String conversationId,
             String title,
             String status,
             String timezone,
-            Instant createdAt,
+            String createdAt,
             int contextVersion,
             List<String> recentMessages,
-            Instant expiresAt) {
+            String expiresAt) {
     }
 }

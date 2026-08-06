@@ -13,6 +13,12 @@ spring:
   ai:
     model:
       chat: ${SPRING_AI_MODEL_CHAT:none}
+      audio:
+        speech: ${SPRING_AI_MODEL_AUDIO_SPEECH:false}
+        transcription: ${SPRING_AI_MODEL_AUDIO_TRANSCRIPTION:false}
+      embedding: ${SPRING_AI_MODEL_EMBEDDING:false}
+      image: ${SPRING_AI_MODEL_IMAGE:false}
+      moderation: ${SPRING_AI_MODEL_MODERATION:false}
     openai:
       api-key: ${OPENAI_API_KEY:disabled}
       base-url: ${OPENAI_BASE_URL:https://api.openai.com}

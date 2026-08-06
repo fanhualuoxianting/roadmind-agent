@@ -42,6 +42,9 @@ public class HomeDeviceService {
         if (!"LIGHT".equals(current.deviceType())) {
             throw new IllegalArgumentException("设备不是灯光类型");
         }
+        if (current.on() == on) {
+            return current;
+        }
         return replace(current, on);
     }
 

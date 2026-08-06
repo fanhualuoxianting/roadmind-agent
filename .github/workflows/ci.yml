@@ -3,16 +3,25 @@ name: roadmind-ci
 on:
   push:
   pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: roadmind-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
-  verify:
+  backend:
+    name: Backend and integration tests
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Set up Java 21
         uses: actions/setup-java@v4
@@ -21,33 +30,213 @@ jobs:
           java-version: '21'
           cache: maven
 
-      - name: Backend tests
-        run: ./mvnw -B test
+      - name: Verify Maven wrapper
+        run: test -x ./mvnw
+
+      - name: Run backend verification
+        shell: bash
+        run: |
+          set -o pipefail
+          ./mvnw -B -ntp verify 2>&1 | tee "$RUNNER_TEMP/roadmind-maven-verify.log"
+
+      - name: Upload backend diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: roadmind-backend-diagnostics
+          path: |
+            ${{ runner.temp }}/roadmind-maven-verify.log
+            **/target/surefire-reports/**
+            **/target/failsafe-reports/**
+          if-no-files-found: warn
+          retention-days: 7
+
+  frontend:
+    name: Frontend tests and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Set up Node 24
         uses: actions/setup-node@v4
         with:
-          node-version: '24'
+          node-version-file: roadmind-web/.node-version
           cache: npm
           cache-dependency-path: roadmind-web/package-lock.json
 
-      - name: Frontend checks
+      - name: Pin npm 12
+        run: npm install --global npm@12.0.2
+
+      - name: Install dependencies
         working-directory: roadmind-web
-        run: |
-          npm ci
-          npm run type-check
-          npm run test -- --run
-          npm run build
+        run: npm ci
 
-      - name: Offline evaluation
-        run: |
-          python3 roadmind-evaluation/run_evaluation.py --output /tmp/roadmind-evaluation.json
-          python3 -m unittest discover -s roadmind-evaluation -p 'test_*.py'
+      - name: Run unit tests
+        working-directory: roadmind-web
+        run: npm run test -- --run
 
-      - name: Secret scan
+      - name: Type-check and build
+        working-directory: roadmind-web
+        run: npm run build
+
+  evaluation:
+    name: Offline agent evaluation
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Compile evaluation sources
+        run: python -m compileall -q roadmind-evaluation
+
+      - name: Run evaluation fixtures
+        run: python roadmind-evaluation/run_evaluation.py --output "$RUNNER_TEMP/roadmind-evaluation.json"
+
+      - name: Run evaluation tests
+        run: python -m unittest discover -s roadmind-evaluation -p 'test_*.py'
+
+      - name: Upload evaluation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: roadmind-evaluation-report
+          path: ${{ runner.temp }}/roadmind-evaluation.json
+          if-no-files-found: error
+
+  docker-smoke:
+    name: Docker HTTP SSE MCP smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Run full-stack Docker smoke
+        env:
+          ROADMIND_SMOKE_PROJECT: roadmind-ci-${{ github.run_id }}
+        run: bash scripts/smoke/docker-smoke.sh
+
+      - name: Collect Docker diagnostics
+        if: always()
+        env:
+          ROADMIND_SMOKE_PROJECT: roadmind-ci-${{ github.run_id }}
+          ROADMIND_NETWORK_NAME: roadmind-ci-${{ github.run_id }}-network
+          ROADMIND_MYSQL_VOLUME_NAME: roadmind-ci-${{ github.run_id }}-mysql-data
+          ROADMIND_REDIS_VOLUME_NAME: roadmind-ci-${{ github.run_id }}-redis-data
+        run: |
+          echo "=== Docker Compose status ==="
+          docker compose --env-file .env.example --profile full -p "$ROADMIND_SMOKE_PROJECT" ps -a || true
+
+          echo "=== Docker Compose logs ==="
+          docker compose --env-file .env.example --profile full -p "$ROADMIND_SMOKE_PROJECT" logs --no-color --tail=500 || true
+
+          echo "=== Docker containers ==="
+          docker ps -a || true
+
+          echo "=== Docker images ==="
+          docker images || true
+
+      - name: Tear down smoke project
+        if: always()
+        env:
+          ROADMIND_SMOKE_PROJECT: roadmind-ci-${{ github.run_id }}
+          ROADMIND_NETWORK_NAME: roadmind-ci-${{ github.run_id }}-network
+          ROADMIND_MYSQL_VOLUME_NAME: roadmind-ci-${{ github.run_id }}-mysql-data
+          ROADMIND_REDIS_VOLUME_NAME: roadmind-ci-${{ github.run_id }}-redis-data
+        run: docker compose --env-file .env.example --profile full -p "$ROADMIND_SMOKE_PROJECT" down --volumes --remove-orphans
+
+  repository-hygiene:
+    name: Repository hygiene
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Validate Compose configuration
+        run: docker compose --env-file .env.example config > /dev/null
+
+      - name: Scan tracked files for common secret formats
         shell: bash
         run: |
-          if git grep -n -I -E 'sk-[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN (RSA |EC )?PRIVATE KEY-----'; then
+          if git grep -n -I -E '(sk|rk)-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN (RSA |EC )?PRIVATE KEY-----'; then
             echo 'Potential secret detected in tracked files.'
+            exit 1
+          fi
+
+      - name: Reject local handoff artifacts and personal paths
+        shell: bash
+        run: |
+          forbidden_files=(
+            design-qa.md
+            README-TOTAL.md
+            SHA256SUMS.txt
+            docs/api-draft.md
+            docs/database-design.md
+            docs/development-plan.md
+            docs/map-and-trip-design.md
+            docs/requirements.md
+            docs/security-design.md
+            roadmind-web/src/types/phase5.ts
+          )
+
+          for path in "${forbidden_files[@]}"; do
+            if git ls-files --error-unmatch "$path" >/dev/null 2>&1; then
+              echo "Stale, local-only, or generated artifact is tracked: $path"
+              exit 1
+            fi
+          done
+
+          tracked_artifacts="$(git ls-files | grep -E '^(qa-artifacts/|ui-reference/|docs/phase[^/]*-validation\.md$)' || true)"
+          if [[ -n "$tracked_artifacts" ]]; then
+            echo 'Local QA artifacts, design-reference dumps, or phase validation logs are tracked:'
+            printf '%s\n' "$tracked_artifacts"
+            exit 1
+          fi
+
+          phase_named_tests="$(git ls-files roadmind-server/src/test/java | grep -E '(/phase[0-9]+/|/Phase[A-Za-z0-9]*Test\.java$)' || true)"
+          if [[ -n "$phase_named_tests" ]]; then
+            echo 'Integration tests must be named after behavior, not development phases:'
+            printf '%s\n' "$phase_named_tests"
+            exit 1
+          fi
+
+          visible_phase_labels="$(git grep -n -I -E 'PHASE[[:space:]]*[0-9]|阶段[[:space:]]*[0-9]' -- README.md docs roadmind-web/src || true)"
+          if [[ -n "$visible_phase_labels" ]]; then
+            echo 'Public documentation or UI still exposes a development-phase label:'
+            printf '%s\n' "$visible_phase_labels"
+            exit 1
+          fi
+
+          if git grep -n -I -E '(^|[^[:alnum:]_])[A-Za-z]:\\|(^|[^[:alnum:]_])[A-Za-z]:/|/Users/[^/]+/|/home/[^/]+/|/tmp/|file:///|codex-clipboard' -- . ':!.github/workflows/ci.yml'; then
+            echo 'An absolute workstation path or clipboard artifact reference is tracked.'
             exit 1
           fi
