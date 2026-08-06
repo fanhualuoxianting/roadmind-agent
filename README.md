@@ -210,6 +210,8 @@ python -m unittest discover -s roadmind-evaluation -p 'test_*.py'
 
 当前测试数量、跳过项、运行环境和 Smoke 状态以 [当前验证报告](docs/current-verification.md) 为准。CI 同时执行后端、前端、离线评测、完整 Docker/HTTP/SSE/MCP Smoke、Compose 配置检查和敏感信息扫描。生成的评测报告位于被 Git 忽略的 `roadmind-evaluation/reports/`。
 
+当前验证摘要：本机无 Docker 时有 **94 non-container tests passed locally**，另有 **23 Testcontainers tests require an available Docker daemon**；CI full profile 已验证 **117 Maven tests passed**，前端 **7 个测试文件 / 18 个用例通过**，30/30 离线 fixture 通过，HTTP、SSE、MCP 和 Docker Smoke 全部通过。详见 [当前验证报告](docs/current-verification.md)。
+
 ## 设计边界
 
 - 车辆、家庭设备、位置和遥测均为数字孪生或 Stub；

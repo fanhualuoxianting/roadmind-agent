@@ -1,106 +1,95 @@
 # RoadMind Agent 当前验证报告
 
-> 本报告只记录当前 checkout 的实际命令结果。`RULE_STUB` 离线评测不是 Live Model 准确率，跳过的 Testcontainers 测试也不计入通过数。
+> 本报告记录当前分支代码在本机和 GitHub Actions 的真实执行结果。`RULE_STUB` 离线评测不是 Live Model 准确率；本机跳过的 Testcontainers 测试不计入通过数。
 
 ## 运行元数据
 
 | 项目 | 当前值 |
 | --- | --- |
 | 分支 | `agent/harden-ownership-and-repo-quality` |
-| 验证基准 HEAD | `704d144 test: harden live model tool boundaries`（最终工程收口提交哈希见交付汇报） |
+| 验证代码 HEAD | `87b8ec2 fix: expose simulator on compose network` |
 | 执行日期 | 2026-08-06 |
-| 操作系统 | Windows 11 x64 |
-| JDK / Maven | Java 21.0.9 / Maven 3.9.9 |
-| Node / npm | Node 24.18.1 / npm 12.0.2 |
-| Python | 3.11.9 |
-| Docker CLI / Compose | Docker 29.6.2 / Compose v5.3.1 |
+| 本机环境 | Windows 11 x64；Java 21.0.9；Maven Wrapper 3.9.9；Node 24.18.1；npm 12.0.2；Python 3.11.9 |
+| 本机 Docker | Docker CLI 29.6.2 / Compose v5.3.1；Linux daemon 未运行 |
+| CI 环境 | GitHub Actions Ubuntu 24.04；Java 21；Node 24 / npm 12；Python 3.13.14；Docker Compose full profile |
+| CI 运行 | [Push 31097208167](https://github.com/fanhualuoxianting/roadmind-agent/actions/runs/31097208167)；[PR 31097211316](https://github.com/fanhualuoxianting/roadmind-agent/actions/runs/31097211316) |
 
-验证命令执行时生成的 `target/`、`node_modules/` 和离线评测报告均按 `.gitignore` 忽略；本报告与本轮代码改动随后一起提交。
+本机验证生成的 `target/`、`node_modules/` 和离线评测报告均被 `.gitignore` 忽略，未写入本报告。
 
 ## 后端测试
 
-最终清理后命令：
+本机命令：
 
 ```powershell
 .\mvnw.cmd -B -ntp clean verify
 ```
 
-结果：
+| 执行环境 | 发现 | 成功 | 失败 | 错误 | 跳过 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 本机 Windows（Docker daemon 不可用） | 117 | 94 | 0 | 0 | 23 |
+| CI full profile（Docker daemon 可用） | 117 | 117 | 0 | 0 | 0 |
 
-| 模块 | 测试 | 失败 | 错误 | 跳过 |
-| --- | ---: | ---: | ---: | ---: |
-| `roadmind-server` | 98 | 0 | 0 | 23 |
-| `vehicle-simulator` | 15 | 0 | 0 | 0 |
-| `roadmind-mcp-server` | 4 | 0 | 0 | 0 |
-| 合计 | 117 | 0 | 0 | 23 |
-
-已执行测试 117 项，其中 94 项通过、0 失败、0 错误、23 项因 Docker daemon 不可用而跳过。统计来自清理后的 Surefire XML 和 Maven 输出，没有包含遗留报告。
+模块合计为 `roadmind-server` 98、`vehicle-simulator` 15、`roadmind-mcp-server` 4。CI 日志显示三模块全部成功；本机 23 项 Testcontainers 集成测试因 Docker daemon 不可用而跳过，不能写成通过。
 
 ## 前端测试与构建
 
 命令：
 
 ```powershell
+Push-Location .\roadmind-web
 npm ci
 npm run test -- --run
 npm run build
+Pop-Location
 ```
 
 - 测试文件：7 个；
-- 测试用例：18 个；
-- 结果：18/18 通过；
+- 测试用例：18 个，18/18 通过；
 - 生产构建：通过，Vite 8.2.0 完成打包；
-- `npm ci` 未再出现 `EBADENGINE`，仍有依赖 `glob` 的非阻断 deprecated 警告。
-
-旧声明曾导致 `EBADENGINE`：Node `>=24.19.0`、npm `>=11.19.0`。本轮已统一到 `roadmind-web/.node-version`、`package.json`、lockfile 和 CI 声明的 Node 24.18.1 / npm 12.0.2，并通过本地 `npm ci`、测试和构建复验。
+- CI 与本机均未出现 `EBADENGINE`；Node/npm 已统一为 Node 24.18.1 / npm 12.0.2。
 
 ## Python 离线评测
-
-命令：
 
 ```powershell
 python .\roadmind-evaluation\run_evaluation.py
 python -m unittest discover -s .\roadmind-evaluation -p 'test_*.py'
 ```
 
-- 模式：`OFFLINE_RULE_STUB`；
-- fixture：30；
-- 通过：30；
-- 失败：0；
-- unittest：1 个测试通过；
+- CI fixture：30，总计 30；通过 30；失败 0；
+- CI Python unittest：1/1 通过；
+- CI 输出的 `planningSuccessRate`、`recoveryRate` 和 `promptInjectionBlockRate` 均为 1.0；
 - 该结果只证明确定性 fixture 和安全规则基线，不代表真实模型能力。
 
 ## Agent 模式与模型配置
 
-- 当前仓库默认配置：`RULE_STUB`；
-- 当前本地 `.env` 激活值：`ROADMIND_AGENT_MODE=RULE_STUB`、`SPRING_AI_MODEL_CHAT=none`；
-- 可选模式：`LIVE_MODEL`，通过 Spring AI `ChatModel` 生成候选只读工具计划；
-- 当前验证时没有启用真实 ChatModel provider，因此不能报告“真实可用模型配置”；
-- API Key 是否存在不写入报告，也不输出任何密钥或个人配置值。
+- 默认模式：`RULE_STUB`；
+- `LIVE_MODEL`：代码支持通过 Spring AI `ChatModel` 生成候选计划，契约测试使用本地 Mock，不调用外部模型；
+- 本轮验证环境：`ROADMIND_AGENT_MODE=RULE_STUB`、`SPRING_AI_MODEL_CHAT=none`；
+- 真实可用模型配置：否。本轮没有启用或验证真实付费 provider；报告不写入 API key、token 或个人配置值。
 
 ## Docker、HTTP、SSE、MCP
 
-| 项目 | 状态 | 证据 / 阻塞 |
+| 项目 | 本机 | CI 证据 |
 | --- | --- | --- |
-| Compose 配置 | 通过 | `docker compose --env-file .env.example --profile full config --quiet` 通过 |
-| Docker daemon | 未通过 | `docker desktop status` 报告 Docker Desktop 未运行；Linux engine named pipe 不存在 |
-| Docker 镜像/容器 Smoke | 未执行 | 已补齐三个应用 Dockerfile 和 `full` profile，但 daemon 不可用 |
-| HTTP Smoke | 阻塞 | 实际调用 `http-smoke.sh` 时 `127.0.0.1:8080/actuator/health` 返回 404 Apache Tomcat 页面，不是 RoadMind 主服务；未停止占用该端口的其他进程 |
-| SSE Smoke | 阻塞 | 实际调用在同一主服务健康检查处返回 404，未建立 RoadMind SSE 连接 |
-| MCP Smoke | 阻塞 | 脚本实际执行并因未提供 token 返回退出码 2；不会使用硬编码 token，MCP 协议单测已通过 |
+| Compose 配置 | 通过 | `full` 和 `full + smoke` 配置检查通过 |
+| 三个应用镜像 | Docker daemon 不可用，未在本机构建 | `vehicle-simulator`、`roadmind-server`、`roadmind-mcp-server` 均构建成功 |
+| 容器健康 | 本机未执行 | MySQL、Redis、模拟器、主服务、MCP 均 healthy；Smoke Runner 执行后自动移除 |
+| HTTP Smoke | 本机受 Docker daemon 和宿主机端口占用影响，未完成 | 通过：capabilities、模拟器状态、conversation、agent acceptance、terminal task lookup |
+| SSE Smoke | 本机未完成 | 通过：收到 `agent.response.ready` 和 `stream.complete` |
+| MCP Smoke | 本机未完成 | 通过：`initialize`、`tools/list`、`vehicle.get_status` |
+| 诊断与清理 | 本机未执行 | 失败时诊断步骤和 teardown 均成功，未泄露 token/cookie/CSRF |
 
-Smoke 脚本已通过 `bash -n` 语法检查，Compose full 配置通过；当前已有的协议级自动化证据是 MCP `initialize`、`tools/list`、未知工具和超大参数测试均通过。这些不等同于跨进程 HTTP Smoke。
+Docker Smoke Runner 使用 `network_mode: service:roadmind-server` 在可信 loopback 边界内访问主服务；模拟器仅在 Compose 环境绑定 `0.0.0.0`，宿主机端口仍绑定 `127.0.0.1`。Smoke token 每次由脚本动态生成，不写入仓库。
 
-## 已知警告和未完成项
+## 已知警告、未完成项和边界
 
-- Docker Desktop daemon 当前不可用，导致 23 个 Testcontainers 测试跳过；
-- Java 测试输出包含 Mockito 动态加载 Java agent 的未来兼容性警告；
-- MCP Spring context 输出无 resource/prompt/complete 方法的非阻断警告；
-- Node/npm 版本已统一，本地复验通过；
-- Docker 镜像构建和跨进程 Smoke 等待 Docker daemon 可用后执行；
-- 当前 `8080`/`8081` 已有非本项目监听者，Smoke 未修改或停止它们；
-- `qa-artifacts/` 在当前 checkout 中不存在，因此没有图片可安全整理；
-- 真实付费模型未启用；Live Model 契约测试使用本地 Mock ChatModel，不调用外部服务。
+- 当前 Windows Docker Desktop Linux daemon 未运行，所以本机仍有 23 个 Testcontainers 测试跳过，且本机 Docker Smoke 尚未复现；CI full profile 已全部通过；
+- Mockito 在测试中自附加 Java agent，输出未来 JDK 兼容性警告；
+- Flyway 提示 MySQL 8.4 高于当前已测试支持版本 8.1；
+- MCP Spring context 提示没有 resource/prompt/complete 方法，属于当前无此类方法的非阻断警告；
+- GitHub Actions 提示 `actions/setup-java@v4` 和面向 Node 20 的旧 action 兼容性迁移警告；
+- `qa-artifacts/` 在当前 checkout 中不存在，没有图片可安全迁移或删除；
+- 真实付费模型、双机局域网演示和 60–90 秒作品集演示仍需人工完成。
 
 ## 复现命令
 
@@ -116,4 +105,4 @@ python -m unittest discover -s .\roadmind-evaluation -p 'test_*.py'
 bash scripts/smoke/docker-smoke.sh
 ```
 
-当 Docker daemon 不可用时，最后一条命令应返回阻塞状态 2；恢复 daemon 后按原命令执行并把真实结果补回本报告。
+Windows 可通过 Git Bash 或 WSL 执行最后一条命令。Docker daemon 不可用时，Docker Smoke 应返回阻塞状态 2；daemon 可用后按原命令执行。CI 使用同一脚本和独立 Compose 项目。
