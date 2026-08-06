@@ -10,6 +10,7 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    timeout-minutes: 35
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -39,10 +40,26 @@ jobs:
           npm run test -- --run
           npm run build
 
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: Offline evaluation
         run: |
-          python3 roadmind-evaluation/run_evaluation.py --output /tmp/roadmind-evaluation.json
-          python3 -m unittest discover -s roadmind-evaluation -p 'test_*.py'
+          python roadmind-evaluation/run_evaluation.py --output /tmp/roadmind-evaluation.json
+          python -m unittest discover -s roadmind-evaluation -p 'test_*.py'
+
+      - name: Upload verification reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: roadmind-verification-reports
+          path: |
+            **/target/surefire-reports/
+            /tmp/roadmind-evaluation.json
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Secret scan
         shell: bash
