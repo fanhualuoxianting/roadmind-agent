@@ -29,7 +29,7 @@
         <java.version>21</java.version>
         <maven.compiler.release>${java.version}</maven.compiler.release>
         <mybatis-plus.version>3.5.17</mybatis-plus.version>
-        <spring-ai.version>1.1.8</spring-ai.version>
+        <spring-ai.version>2.0.0</spring-ai.version>
         <testcontainers.version>2.0.5</testcontainers.version>
         <resilience4j.version>2.3.0</resilience4j.version>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
