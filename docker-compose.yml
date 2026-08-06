@@ -127,6 +127,30 @@ services:
       retries: 12
       start_period: 30s
 
+  roadmind-smoke-runner:
+    profiles: ["smoke"]
+    build:
+      context: .
+      dockerfile: docker/smoke-runner.Dockerfile
+    working_dir: /workspace
+    command: ["bash", "-lc", "set -euo pipefail; bash scripts/smoke/http-smoke.sh; bash scripts/smoke/sse-smoke.sh; bash scripts/smoke/mcp-smoke.sh"]
+    environment:
+      ROADMIND_SERVER_BASE_URL: http://127.0.0.1:8080
+      ROADMIND_SIMULATOR_BASE_URL: http://vehicle-simulator:8081
+      ROADMIND_MCP_BASE_URL: http://roadmind-mcp-server:8090
+      ROADMIND_INTERNAL_TOKEN: ${ROADMIND_INTERNAL_TOKEN:-disabled}
+      ROADMIND_MCP_TOKEN: ${ROADMIND_MCP_TOKEN:-disabled}
+    volumes:
+      - .:/workspace:ro
+    network_mode: "service:roadmind-server"
+    depends_on:
+      roadmind-server:
+        condition: service_healthy
+      vehicle-simulator:
+        condition: service_healthy
+      roadmind-mcp-server:
+        condition: service_healthy
+
 networks:
   roadmind-network:
     name: ${ROADMIND_NETWORK_NAME:-roadmind-agent-network}

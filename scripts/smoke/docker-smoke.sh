@@ -26,6 +26,7 @@ export ROADMIND_NETWORK_NAME="${ROADMIND_NETWORK_NAME:-${project_name}-network}"
 export ROADMIND_MYSQL_VOLUME_NAME="${ROADMIND_MYSQL_VOLUME_NAME:-${project_name}-mysql-data}"
 export ROADMIND_REDIS_VOLUME_NAME="${ROADMIND_REDIS_VOLUME_NAME:-${project_name}-redis-data}"
 compose=(docker compose --env-file "$compose_env" --profile full -p "$project_name")
+runner_compose=(docker compose --env-file "$compose_env" --profile full --profile smoke -p "$project_name")
 
 if [[ -z "${ROADMIND_INTERNAL_TOKEN:-}" || "$ROADMIND_INTERNAL_TOKEN" == "disabled" ]]; then
     smoke_token="$("${SMOKE_PYTHON[@]}" -c 'import secrets; print(secrets.token_urlsafe(24))')"
@@ -36,7 +37,9 @@ else
 fi
 
 "${compose[@]}" config >/dev/null
+"${runner_compose[@]}" config >/dev/null
 "${compose[@]}" build vehicle-simulator roadmind-server roadmind-mcp-server
+"${runner_compose[@]}" build roadmind-smoke-runner
 "${compose[@]}" up -d
 
 wait_for_health() {
@@ -57,16 +60,12 @@ wait_for_health() {
     return 1
 }
 
+wait_for_health mysql
+wait_for_health redis
 wait_for_health vehicle-simulator
 wait_for_health roadmind-server
 wait_for_health roadmind-mcp-server
 
-ROADMIND_SERVER_BASE_URL="${ROADMIND_SERVER_BASE_URL:-http://127.0.0.1:8080}" \
-ROADMIND_SIMULATOR_BASE_URL="${ROADMIND_SIMULATOR_BASE_URL:-http://127.0.0.1:8081}" \
-    bash "$root_dir/scripts/smoke/http-smoke.sh"
-ROADMIND_SERVER_BASE_URL="${ROADMIND_SERVER_BASE_URL:-http://127.0.0.1:8080}" \
-    bash "$root_dir/scripts/smoke/sse-smoke.sh"
-ROADMIND_MCP_BASE_URL="${ROADMIND_MCP_BASE_URL:-http://127.0.0.1:8090}" \
-    bash "$root_dir/scripts/smoke/mcp-smoke.sh"
+"${runner_compose[@]}" run --rm --no-deps roadmind-smoke-runner
 
-echo "Docker smoke passed for compose project $project_name. Containers are left running for inspection; clean up with the documented compose down command."
+echo "Docker smoke passed for compose project $project_name. Smoke runner was removed automatically."
